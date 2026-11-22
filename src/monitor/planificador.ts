@@ -1,6 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { ENV, Env } from '../config/env';
+import { BuzonService } from '../correo/buzon.service';
 import { EventosService } from '../notificaciones/eventos.service';
 import { MonitorService } from './monitor.service';
 
@@ -14,6 +15,7 @@ export class Planificador {
     @Inject(ENV) private readonly env: Env,
     private readonly monitor: MonitorService,
     private readonly eventos: EventosService,
+    private readonly buzon: BuzonService,
   ) {}
 
   @Cron(CronExpression.EVERY_MINUTE)
@@ -24,6 +26,11 @@ export class Planificador {
   @Cron(CronExpression.EVERY_30_SECONDS)
   entregarAvisos(): Promise<void> {
     return this.ejecutar('entrega', () => this.eventos.entregarPendientes());
+  }
+
+  @Cron(CronExpression.EVERY_5_MINUTES)
+  leerBuzon(): Promise<void> {
+    return this.ejecutar('buzon', () => this.buzon.sincronizar());
   }
 
   @Cron('0 7 * * 1-6', { timeZone: 'America/Bogota' })

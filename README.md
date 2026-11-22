@@ -73,6 +73,8 @@ siempre el mismo sobre:
 | `POST /v1/tramites/:id/revisar` | Revisa ahora mismo, sin esperar el turno |
 | `POST /v1/tramites/:id/actuaciones` | Registra una actuación revisada a mano (`fecha`, `titulo`, `anotacion`) |
 | `POST /v1/correos` | Recibe un correo de un despacho y lo enlaza con su trámite |
+| `GET /v1/correos/pendientes` | Correos de juzgados sin trámite asociado |
+| `DELETE /v1/correos/pendientes/:id` | Quita un correo de esa lista |
 | `GET /v1/eventos` | Novedades en orden, con `cursor` y `limit` |
 | `POST /v1/eventos/reintentar` | Vuelve a poner en cola los avisos que agotaron sus intentos |
 
@@ -178,8 +180,23 @@ recibe cada correo y lo convierte en una actuación del trámite al que pertenec
 - El mismo correo enviado dos veces no duplica la actuación.
 - Solo se aceptan remitentes de los dominios de `CORREO_DOMINIOS_CONFIABLES`. Radika confía
   en que quien lee el buzón ya verificó la autenticidad del correo (SPF/DKIM).
-- Esta ruta recibe correos; el lector que vigila el buzón y los envía aquí es una pieza aparte,
-  todavía pendiente.
+
+### Lector del buzón
+
+Con `IMAP_HOST`, `IMAP_USER` e `IMAP_PASSWORD` definidos, Radika revisa el buzón cada 5
+minutos y hace esto mismo sola:
+
+- Abre la carpeta en modo solo lectura: no marca correos como leídos, no mueve ni borra nada.
+- Lee solo los encabezados (remitente, asunto, fecha, nombres de adjuntos), no el cuerpo.
+- La primera vez toma como punto de partida el último correo que haya; el historial anterior
+  no se procesa.
+- Ignora por completo los correos que no vienen de un dominio judicial.
+- Los correos de juzgados que no logra enlazar quedan en `GET /v1/correos/pendientes` con el
+  motivo; casi siempre indican una tutela que falta registrar. Se quitan de la lista con
+  `DELETE /v1/correos/pendientes/:id`.
+
+La lógica del lector está probada con un buzón simulado; la conexión IMAP real se comprueba
+al desplegar, con el buzón de verdad.
 
 ## Revisión asistida
 

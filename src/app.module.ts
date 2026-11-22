@@ -6,6 +6,11 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { FiltroErrores } from './common/respuesta';
 import { cargarEnv, ENV, Env } from './config/env';
+import { Buzon, CorreoPendiente } from './correo/buzon.entity';
+import { BuzonService } from './correo/buzon.service';
+import { ImapLectorBuzon } from './correo/imap.lector-buzon';
+import { LectorBuzon } from './correo/lector-buzon';
+import { Buzon1700000000001 } from './migrations/1700000000001-buzon';
 import { FuentesRegistry } from './fuentes/fuentes.registry';
 import { HTTP_FETCH, RamaJudicialFuente } from './fuentes/rama-judicial.fuente';
 import { Inicial1700000000000 } from './migrations/1700000000000-inicial';
@@ -22,7 +27,7 @@ import { TramitesService } from './tramites/tramites.service';
 
 const PETICIONES_POR_MINUTO = 120;
 const VENTANA_MS = 60_000;
-const ENTIDADES = [Tramite, Actuacion, Evento];
+const ENTIDADES = [Tramite, Actuacion, Evento, Buzon, CorreoPendiente];
 
 @Module({
   providers: [{ provide: ENV, useFactory: () => cargarEnv() }],
@@ -40,7 +45,7 @@ class ConfigModule {}
         type: 'postgres' as const,
         url: env.DATABASE_URL,
         entities: ENTIDADES,
-        migrations: [Inicial1700000000000],
+        migrations: [Inicial1700000000000, Buzon1700000000001],
         migrationsRun: true,
         synchronize: false,
       }),
@@ -62,6 +67,8 @@ class ConfigModule {}
     TramitesService,
     EventosService,
     MonitorService,
+    { provide: LectorBuzon, useClass: ImapLectorBuzon },
+    BuzonService,
     Planificador,
   ],
 })

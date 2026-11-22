@@ -4,6 +4,7 @@ import {
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { Publico } from '../auth/api-key.guard';
 import { ok, validar } from '../common/respuesta';
+import { BuzonService } from '../correo/buzon.service';
 import { MonitorService } from '../monitor/monitor.service';
 import { EventosService } from '../notificaciones/eventos.service';
 import {
@@ -21,6 +22,7 @@ export class TramitesController {
     private readonly tramites: TramitesService,
     private readonly monitor: MonitorService,
     private readonly eventos: EventosService,
+    private readonly buzon: BuzonService,
   ) {}
 
   @Publico()
@@ -76,6 +78,19 @@ export class TramitesController {
   @HttpCode(HttpStatus.OK)
   async recibirCorreo(@Body() cuerpo: unknown) {
     return ok(await this.monitor.registrarCorreo(validar(correoEntranteSchema, cuerpo)));
+  }
+
+  /** Correos de despachos que no se pudieron enlazar con un tramite. */
+  @Get('v1/correos/pendientes')
+  async correosPendientes() {
+    return ok(await this.buzon.listarPendientes());
+  }
+
+  @Delete('v1/correos/pendientes/:id')
+  @HttpCode(HttpStatus.OK)
+  async descartarCorreo(@Param('id', ParseUUIDPipe) id: string) {
+    await this.buzon.descartarPendiente(id);
+    return ok({ descartado: true });
   }
 
   @Get('v1/eventos')

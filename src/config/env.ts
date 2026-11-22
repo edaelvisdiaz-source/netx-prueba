@@ -35,6 +35,12 @@ const esquema = z
       .string()
       .default('ramajudicial.gov.co,consejodeestado.gov.co,corteconstitucional.gov.co')
       .transform((valor) => valor.split(',').map((dominio) => dominio.trim().toLowerCase()).filter(Boolean)),
+    /** Buzon donde llegan las notificaciones. Sin estos tres datos el lector queda apagado. */
+    IMAP_HOST: z.string().min(3).optional().or(z.literal('').transform(() => undefined)),
+    IMAP_PORT: z.coerce.number().int().min(1).max(65535).default(993),
+    IMAP_USER: z.string().email().optional().or(z.literal('').transform(() => undefined)),
+    IMAP_PASSWORD: z.string().min(1).optional().or(z.literal('').transform(() => undefined)),
+    IMAP_CARPETA: z.string().min(1).default('INBOX'),
     RESUMENES_POR_REVISION: z.coerce.number().int().min(0).max(50).default(10),
   })
   .superRefine((env, contexto) => {

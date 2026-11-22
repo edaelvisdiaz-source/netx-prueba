@@ -6,6 +6,8 @@ import request from 'supertest';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
 import { ENV, Env } from '../src/config/env';
+import { BuzonService } from '../src/correo/buzon.service';
+import { CorreoLeido, LectorBuzon, LecturaBuzon } from '../src/correo/lector-buzon';
 import { ActuacionFuente, Fuente, FuenteError, ProcesoFuente } from '../src/fuentes/fuente';
 import { RamaJudicialFuente } from '../src/fuentes/rama-judicial.fuente';
 import { MonitorService } from '../src/monitor/monitor.service';
@@ -46,6 +48,21 @@ class ResumidorFalso extends Resumidor {
   }
 }
 
+class LectorFalso extends LectorBuzon {
+  buzon: string | null = 'asesor@empresa.test';
+  uidValidity = '1';
+  correos: CorreoLeido[] = [];
+
+  async leerDesde(ultimoUid: number, maximo: number): Promise<LecturaBuzon> {
+    const uidMaximo = this.correos.reduce((mayor, correo) => Math.max(mayor, correo.uid), 0);
+    return {
+      uidValidity: this.uidValidity,
+      uidMaximo,
+      correos: this.correos.filter((correo) => correo.uid > ultimoUid && correo.uid <= ultimoUid + maximo),
+    };
+  }
+}
+
 const proceso = (fechaRadicacion: string): ProcesoFuente => ({
   idFuente: '77', despacho: 'JUZGADO 5 CIVIL', sujetos: 'Accionante: A | Accionado: MEN', fechaRadicacion, privado: false,
 });
@@ -67,6 +84,7 @@ describe('Radika API', () => {
   let crm: Server;
   const fuente = new FuenteFalsa();
   const resumidor = new ResumidorFalso();
+  const lector = new LectorFalso();
   const recibidos: Array<{ cuerpo: string; firma: string; marca: string }> = [];
   let estadoCrm = 200;
 
@@ -101,6 +119,8 @@ describe('Radika API', () => {
       .useValue(fuente)
       .overrideProvider(Resumidor)
       .useValue(resumidor)
+      .overrideProvider(LectorBuzon)
+      .useValue(lector)
       .compile();
     app = modulo.createNestApplication();
     await app.init();
@@ -108,7 +128,10 @@ describe('Radika API', () => {
   });
 
   beforeEach(async () => {
-    await datos.query('TRUNCATE eventos, actuaciones, tramites');
+    await datos.query('TRUNCATE eventos, actuaciones, tramites, buzones, correos_pendientes');
+    lector.buzon = 'asesor@empresa.test';
+    lector.uidValidity = '1';
+    lector.correos = [];
     fuente.procesos = [];
     fuente.actuaciones = [];
     fuente.fallo = null;
@@ -447,6 +470,44 @@ describe('Radika API', () => {
     await correo('x', { date: 'ayer' }).expect(400);
   });
 
+  test('vigila el buzon: parte del presente, enlaza lo que puede y deja pendiente lo demas', async () => {
+    const buzon = app.get(BuzonService);
+    const correo = (uid: number, from: string, subject: string): CorreoLeido => ({
+      uid, from, subject, messageId: `<${uid}@correo.test>`, fromNombre: uid % 2 ? 'Juzgado 17 Penal' : null,
+      date: '2026-11-11T21:54:06Z', adjuntos: uid === 12 ? ['Fallo.pdf'] : [],
+    });
+    const juzgado = 'j17pccbt@cendoj.ramajudicial.gov.co';
+    const tutela = await crearTutela('11001310901720260979500');
+
+    lector.correos = [correo(10, juzgado, 'NOTIFICA AUTO AVOCA TUTELA 110013109017-2026 - 9795')];
+    expect(await buzon.sincronizar()).toEqual({ leidos: 0, vinculados: 0, pendientes: 0 });
+    expect(await datos.query('SELECT count(*)::int AS n FROM actuaciones')).toEqual([{ n: 0 }]);
+
+    lector.correos = [
+      ...lector.correos,
+      correo(11, 'boletin@tienda.com', 'Oferta 11001310901720260979500'),
+      correo(12, juzgado, 'NOTIFICA FALLO TUTELA 110013109017-2026 - 9795'),
+      correo(13, juzgado, 'NOTIFICA AUTO ADMITE TUTELA 2026-00444'),
+    ];
+    expect(await buzon.sincronizar()).toEqual({ leidos: 3, vinculados: 1, pendientes: 1 });
+    expect(await buzon.sincronizar()).toEqual({ leidos: 0, vinculados: 0, pendientes: 0 });
+    const actuaciones = await datos.query('SELECT tramite_id, categoria, anotacion FROM actuaciones');
+    expect(actuaciones).toEqual([{ tramite_id: tutela.id, categoria: 'FALLO', anotacion: expect.stringContaining('Fallo.pdf') }]);
+
+    const pendientes = (await conLlave(api().get('/v1/correos/pendientes')).expect(200)).body.data;
+    expect(pendientes).toMatchObject([{ asunto: 'NOTIFICA AUTO ADMITE TUTELA 2026-00444', motivo: 'SIN_TRAMITE', remitente: juzgado }]);
+    await conLlave(api().delete(`/v1/correos/pendientes/${pendientes[0].id}`)).expect(200);
+    await conLlave(api().delete(`/v1/correos/pendientes/${pendientes[0].id}`)).expect(404);
+
+    lector.uidValidity = '2';
+    lector.correos = [correo(1, juzgado, 'NOTIFICA FALLO TUTELA 110013109017-2026 - 9795')];
+    expect(await buzon.sincronizar()).toEqual({ leidos: 0, vinculados: 0, pendientes: 0 });
+    expect(await datos.query('SELECT uid_validity, ultimo_uid FROM buzones')).toEqual([{ uid_validity: '2', ultimo_uid: 1 }]);
+
+    lector.buzon = null;
+    expect(await buzon.sincronizar()).toEqual({ leidos: 0, vinculados: 0, pendientes: 0 });
+  });
+
   test('un cuerpo mal formado responde 400 y no 500', async () => {
     const respuesta = await conLlave(api().post('/v1/tramites')).set('content-type', 'application/json').send('{"tipo":').expect(400);
     expect(respuesta.body).toMatchObject({ success: false, data: null, error: { code: 'BAD_REQUEST' } });
@@ -458,11 +519,11 @@ describe('Radika API', () => {
     const monitor = app.get(MonitorService);
     const eventos = app.get(EventosService);
     let ejecuciones = 0;
-    const apagado = new Planificador(env, monitor, eventos);
+    const apagado = new Planificador(env, monitor, eventos, app.get(BuzonService));
     await apagado.ejecutar('x', async () => void (ejecuciones += 1));
     expect(ejecuciones).toBe(0);
 
-    const encendido = new Planificador({ ...env, SCHEDULER_ENABLED: true }, monitor, eventos);
+    const encendido = new Planificador({ ...env, SCHEDULER_ENABLED: true }, monitor, eventos, app.get(BuzonService));
     let liberar: () => void = () => undefined;
     const lenta = encendido.ejecutar('x', () => new Promise<void>((resolver) => (liberar = resolver)));
     await encendido.ejecutar('x', async () => void (ejecuciones += 1));
@@ -474,7 +535,7 @@ describe('Radika API', () => {
     });
     await encendido.ejecutar('x', async () => void (ejecuciones += 1));
     expect(ejecuciones).toBe(1);
-    await expect(Promise.all([encendido.revisarTramites(), encendido.entregarAvisos(), encendido.avisarTerminos()])).resolves.toBeDefined();
+    await expect(Promise.all([encendido.revisarTramites(), encendido.entregarAvisos(), encendido.avisarTerminos(), encendido.leerBuzon()])).resolves.toBeDefined();
   });
 
   test('limita las revisiones manuales por minuto', async () => {
