@@ -71,6 +71,27 @@ Después de desplegar, comprueba lo que las pruebas automáticas solo simulan:
 3. Con el buzón configurado, envía un correo de prueba y revisa los registros del servicio.
 4. Con `ANTHROPIC_API_KEY`, la siguiente actuación nueva debe llegar con `resumen`.
 
+### Instalación actual (22 de noviembre de 2026)
+
+Radika corre en la cuenta de AWS `netx-group`, región `us-east-1`:
+
+| Recurso | Nombre |
+|---|---|
+| Servidor | EC2 `i-036cf94ba07894aea` (`t4g.micro`, etiqueta `Proyecto=radika`), sin puertos abiertos a internet |
+| Administración | Solo por AWS Systems Manager (sin SSH); rol `radika-servidor` |
+| Base de datos | Base `radika` y usuario `radika` dentro del PostgreSQL de `arm`, con conexión cifrada y verificada |
+| Secretos | `radika/config` en Secrets Manager (llave de la API, clave de la base, llave de cifrado, secreto de avisos) |
+| Paquete | `s3://radika-despliegue-146736797821/radika.tgz` |
+| En el servidor | `/opt/radika` (paquete y `.env`), contenedor `radika` con reinicio automático, API en `127.0.0.1:3000` |
+
+Comprobado en el servidor: la consulta a la Rama Judicial responde y la tutela
+`11001310305620260005200` quedó registrada con sus siete actuaciones (referencia
+`PRUEBA-DESPLIEGUE`). Pendiente: dar a la API una dirección HTTPS para el CRM, configurar el
+buzón (`IMAP_*`) y la llave de Anthropic.
+
+Para actualizar: subir un `radika.tgz` nuevo al almacén y, en el servidor, descargarlo a
+`/opt/radika`, `docker build` y volver a crear el contenedor con el mismo `.env`.
+
 ### Prueba en vivo de la Rama Judicial
 
 Desde un equipo con salida a internet:
