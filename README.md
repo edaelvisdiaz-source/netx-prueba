@@ -77,7 +77,9 @@ Radika corre en la cuenta de AWS `netx-group`, región `us-east-1`:
 
 | Recurso | Nombre |
 |---|---|
-| Servidor | EC2 `i-036cf94ba07894aea` (`t4g.micro`, etiqueta `Proyecto=radika`), sin puertos abiertos a internet |
+| Dirección | `https://radika.convalidaciones.com` (registro `A` en Hostinger hacia la IP fija `98.85.14.225`) |
+| Servidor | EC2 `i-036cf94ba07894aea` (`t4g.micro`, etiqueta `Proyecto=radika`); solo los puertos 80 y 443 abiertos |
+| Certificado | Contenedor `caddy` (`/opt/caddy/Caddyfile`): lo emite y renueva solo con Let's Encrypt y pasa el tráfico a Radika |
 | Administración | Solo por AWS Systems Manager (sin SSH); rol `radika-servidor` |
 | Base de datos | Base `radika` y usuario `radika` dentro del PostgreSQL de `arm`, con conexión cifrada y verificada |
 | Secretos | `radika/config` en Secrets Manager (llave de la API, clave de la base, llave de cifrado, secreto de avisos) |
@@ -86,8 +88,8 @@ Radika corre en la cuenta de AWS `netx-group`, región `us-east-1`:
 
 Comprobado en el servidor: la consulta a la Rama Judicial responde y la tutela
 `11001310305620260005200` quedó registrada con sus siete actuaciones (referencia
-`PRUEBA-DESPLIEGUE`). Pendiente: dar a la API una dirección HTTPS para el CRM, configurar el
-buzón (`IMAP_*`) y la llave de Anthropic.
+`PRUEBA-DESPLIEGUE`). Las pantallas están en `public/` y se sirven desde la misma dirección.
+Pendiente: configurar el buzón (`IMAP_*`), la llave de Anthropic y la conexión con el CRM.
 
 Para actualizar: subir un `radika.tgz` nuevo al almacén y, en el servidor, descargarlo a
 `/opt/radika`, `docker build` y volver a crear el contenedor con el mismo `.env`.
