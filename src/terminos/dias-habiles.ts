@@ -111,5 +111,6 @@ export function soloFecha(valor: string | null | undefined): FechaISO | null {
   if (!valor) return null;
   const fecha = valor.slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(fecha)) return null;
-  return Number.isNaN(aUTC(fecha).getTime()) ? null : fecha;
+  const interpretada = aUTC(fecha);
+  return !Number.isNaN(interpretada.getTime()) && aISO(interpretada) === fecha ? fecha : null;
 }

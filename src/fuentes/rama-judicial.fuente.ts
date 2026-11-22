@@ -10,6 +10,7 @@ export type FetchFn = typeof fetch;
 const MAX_PAGINAS_PROCESOS = 5;
 const MAX_PAGINAS_ACTUACIONES = 30;
 const HTTP_NO_ENCONTRADO = 404;
+const MAX_BYTES_RESPUESTA = 2_000_000;
 
 const paginacion = z.object({ cantidadPaginas: z.number().int().nonnegative() }).passthrough();
 
@@ -157,8 +158,17 @@ export class RamaJudicialFuente extends Fuente {
     if (!respuesta.ok) {
       throw new FuenteError(`La Rama Judicial respondio ${respuesta.status}`, 'NO_DISPONIBLE');
     }
+    let texto: string;
     try {
-      return await respuesta.json();
+      texto = await respuesta.text();
+    } catch {
+      throw new FuenteError('La Rama Judicial corto la respuesta', 'NO_DISPONIBLE');
+    }
+    if (texto.length > MAX_BYTES_RESPUESTA) {
+      throw new FuenteError('La Rama Judicial envio una respuesta demasiado grande', 'RESPUESTA_INVALIDA');
+    }
+    try {
+      return JSON.parse(texto) as unknown;
     } catch {
       throw new FuenteError('La Rama Judicial no respondio en el formato esperado', 'RESPUESTA_INVALIDA');
     }

@@ -30,6 +30,11 @@ npm start                   # crea las tablas al arrancar
 Variables obligatorias: `DATABASE_URL` y `RADIKA_API_KEYS` (una o varias llaves de mínimo
 32 caracteres, separadas por coma). El resto está explicado en `.env.example`.
 
+En producción deja `NODE_ENV=production` (es el valor por defecto y exige `https` en la
+dirección del CRM), agrega `?sslmode=require` a `DATABASE_URL` y, si hay un balanceador
+delante, pon en `TRUST_PROXY_HOPS` cuántos son para que el límite de peticiones cuente por
+cliente real. El límite es de 120 peticiones por minuto, y 10 por minuto para `revisar`.
+
 ### Prueba en vivo de la Rama Judicial
 
 Desde un equipo con salida a internet:
@@ -67,6 +72,7 @@ siempre el mismo sobre:
 | `DELETE /v1/tramites/:id` | Elimina el trámite y su historial |
 | `POST /v1/tramites/:id/revisar` | Revisa ahora mismo, sin esperar el turno |
 | `GET /v1/eventos` | Novedades en orden, con `cursor` y `limit` |
+| `POST /v1/eventos/reintentar` | Vuelve a poner en cola los avisos que agotaron sus intentos |
 
 ### Registrar un trámite
 

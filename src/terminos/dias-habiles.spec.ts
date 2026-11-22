@@ -54,6 +54,7 @@ describe('dias habiles de Colombia', () => {
   test('soloFecha extrae la fecha o devuelve null', () => {
     expect(soloFecha('2026-05-10T00:00:00')).toBe('2026-05-10');
     expect(soloFecha('no es fecha')).toBeNull();
+    expect(soloFecha('2026-02-31')).toBeNull();
     expect(soloFecha(null)).toBeNull();
     expect(soloFecha('')).toBeNull();
   });

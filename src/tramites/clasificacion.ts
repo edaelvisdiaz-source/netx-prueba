@@ -15,7 +15,11 @@ function sinTildes(texto: string): string {
 
 /** Clasificacion aproximada por palabras clave. Es una ayuda, no reemplaza leer la actuacion. */
 export function clasificarActuacion(titulo: string, anotacion: string | null): CategoriaActuacion {
-  const texto = sinTildes(`${titulo} ${anotacion ?? ''}`);
-  const regla = REGLAS.find(([patron]) => patron.test(texto));
-  return regla ? regla[1] : 'OTRA';
+  const porTitulo = REGLAS.find(([patron]) => patron.test(sinTildes(titulo)));
+  if (porTitulo) return porTitulo[1];
+  // La anotacion suele mencionar el fallo que vendra ("se fallara en 10 dias"): no cuenta como fallo.
+  const porAnotacion = REGLAS.find(
+    ([patron, categoria]) => categoria !== 'FALLO' && patron.test(sinTildes(anotacion ?? '')),
+  );
+  return porAnotacion ? porAnotacion[1] : 'OTRA';
 }

@@ -87,6 +87,11 @@ describe('fuente Rama Judicial', () => {
     await expect(sinFecha.fuente.listarActuaciones('10')).rejects.toMatchObject({ codigo: 'RESPUESTA_INVALIDA' });
   });
 
+  test('rechaza respuestas demasiado grandes', async () => {
+    const enorme = fuenteCon({ NumeroRadicacion: () => new Response('x'.repeat(2_000_001), { status: 200 }) });
+    await expect(enorme.fuente.buscarProcesos('1')).rejects.toMatchObject({ codigo: 'RESPUESTA_INVALIDA' });
+  });
+
   test('no acepta identificadores que no sean numericos', async () => {
     const { fuente, llamadas } = fuenteCon({});
     await expect(fuente.listarActuaciones('10/../x')).rejects.toBeInstanceOf(FuenteError);

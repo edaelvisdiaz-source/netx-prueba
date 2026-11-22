@@ -94,11 +94,8 @@ export class TramitesService {
   async actualizar(id: string, cambios: ActualizarTramite): Promise<Tramite> {
     const actual = await this.obtener(id);
     const reactivado = cambios.estado === 'ACTIVO' && actual.estado !== 'ACTIVO';
-    return this.tramites.save({
-      ...actual,
-      ...cambios,
-      ...(reactivado ? { proximaRevisionAt: new Date() } : {}),
-    });
+    await this.tramites.update({ id }, { ...cambios, ...(reactivado ? { proximaRevisionAt: new Date() } : {}) });
+    return this.obtener(id);
   }
 
   async eliminar(id: string): Promise<void> {

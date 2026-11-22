@@ -1,4 +1,6 @@
-import { CanActivate, ExecutionContext, Inject, Injectable, SetMetadata, UnauthorizedException } from '@nestjs/common';
+import {
+  CanActivate, ExecutionContext, Inject, Injectable, Logger, SetMetadata, UnauthorizedException,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Request } from 'express';
@@ -14,6 +16,7 @@ function huella(valor: string): Buffer {
 /** Exige el encabezado X-Api-Key. Compara huellas en tiempo constante. */
 @Injectable()
 export class ApiKeyGuard implements CanActivate {
+  private readonly logger = new Logger(ApiKeyGuard.name);
   private readonly huellas: ReadonlyArray<Buffer>;
 
   constructor(@Inject(ENV) env: Env, private readonly reflector: Reflector) {
@@ -26,13 +29,17 @@ export class ApiKeyGuard implements CanActivate {
       contexto.getClass(),
     ]);
     if (publico) return true;
-    const encabezado = contexto.switchToHttp().getRequest<Request>().headers['x-api-key'];
+    const peticion = contexto.switchToHttp().getRequest<Request>();
+    const encabezado = peticion.headers['x-api-key'];
     const recibida = huella(typeof encabezado === 'string' ? encabezado : '');
     const coincide = this.huellas.reduce(
       (encontrada, esperada) => timingSafeEqual(recibida, esperada) || encontrada,
       false,
     );
-    if (!coincide) throw new UnauthorizedException('Llave de API ausente o invalida');
+    if (!coincide) {
+      this.logger.warn(`Llave de API rechazada en ${peticion.method} ${peticion.path} desde ${peticion.ip}`);
+      throw new UnauthorizedException('Llave de API ausente o invalida');
+    }
     return true;
   }
 }

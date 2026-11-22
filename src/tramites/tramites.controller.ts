@@ -1,6 +1,7 @@
 import {
   Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Query,
 } from '@nestjs/common';
+import { SkipThrottle, Throttle } from '@nestjs/throttler';
 import { Publico } from '../auth/api-key.guard';
 import { ok, validar } from '../common/respuesta';
 import { MonitorService } from '../monitor/monitor.service';
@@ -9,6 +10,9 @@ import {
   actualizarTramiteSchema, crearTramiteSchema, listarEventosSchema, listarTramitesSchema,
 } from './dto';
 import { TramitesService } from './tramites.service';
+
+const REVISIONES_MANUALES_POR_MINUTO = 10;
+const VENTANA_MS = 60_000;
 
 @Controller()
 export class TramitesController {
@@ -19,6 +23,7 @@ export class TramitesController {
   ) {}
 
   @Publico()
+  @SkipThrottle()
   @Get('health')
   salud() {
     return ok({ estado: 'ok' });
@@ -54,6 +59,7 @@ export class TramitesController {
   }
 
   @Post('v1/tramites/:id/revisar')
+  @Throttle({ default: { limit: REVISIONES_MANUALES_POR_MINUTO, ttl: VENTANA_MS } })
   @HttpCode(HttpStatus.OK)
   async revisar(@Param('id', ParseUUIDPipe) id: string) {
     return ok(await this.monitor.revisar(id));
@@ -64,5 +70,12 @@ export class TramitesController {
     const { cursor, limit } = validar(listarEventosSchema, consulta);
     const { items, siguiente } = await this.eventos.listar(cursor, limit);
     return ok({ eventos: items, siguiente });
+  }
+
+  /** Vuelve a poner en cola los avisos que agotaron sus intentos (por ejemplo tras una caida larga del CRM). */
+  @Post('v1/eventos/reintentar')
+  @HttpCode(HttpStatus.OK)
+  async reintentarEventos() {
+    return ok({ reencolados: await this.eventos.reencolarFallidos() });
   }
 }

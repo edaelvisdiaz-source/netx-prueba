@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ESTADOS_TRAMITE, FUENTES, TIPOS_TRAMITE } from './tipos';
 
 const LIMITE_MAXIMO = 100;
+const PAGINA_MAXIMA = 10_000;
 const referenciaCrm = z.string().trim().min(1).max(64).regex(/^[\w\-.]+$/, 'solo letras, numeros, guion y punto');
 const clienteNombre = z.string().trim().min(1).max(160);
 
@@ -21,7 +22,7 @@ export const listarTramitesSchema = z
     referenciaCrm: referenciaCrm.optional(),
     tipo: z.enum(TIPOS_TRAMITE).optional(),
     estado: z.enum(ESTADOS_TRAMITE).optional(),
-    page: z.coerce.number().int().min(1).default(1),
+    page: z.coerce.number().int().min(1).max(PAGINA_MAXIMA).default(1),
     limit: z.coerce.number().int().min(1).max(LIMITE_MAXIMO).default(20),
   })
   .strict();
@@ -39,7 +40,12 @@ export type ActualizarTramite = z.infer<typeof actualizarTramiteSchema>;
 
 export const listarEventosSchema = z
   .object({
-    cursor: z.string().max(80).regex(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z_[0-9a-f-]{36}$/).optional(),
+    cursor: z
+      .string()
+      .max(80)
+      .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z_[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/)
+      .refine((valor) => !Number.isNaN(Date.parse(valor.split('_')[0])), 'fecha invalida')
+      .optional(),
     limit: z.coerce.number().int().min(1).max(LIMITE_MAXIMO).default(50),
   })
   .strict();

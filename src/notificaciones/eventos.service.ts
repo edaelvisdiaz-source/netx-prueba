@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { createHmac } from 'node:crypto';
-import { EntityManager, LessThanOrEqual, Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 import { ENV, Env } from '../config/env';
 import { FetchFn, HTTP_FETCH } from '../fuentes/rama-judicial.fuente';
 import { Tramite } from '../tramites/tramite.entity';
@@ -12,6 +12,7 @@ const ESPERAS_MINUTOS: ReadonlyArray<number> = [1, 5, 30, 120, 720];
 const LOTE_ENTREGA = 20;
 const TIEMPO_LIMITE_WEBHOOK_MS = 10_000;
 const MS_MINUTO = 60_000;
+const RESERVA_ENTREGA_MINUTOS = 5;
 
 export interface NuevoEvento {
   readonly tramite: Tramite;
@@ -36,9 +37,9 @@ export class EventosService {
   ) {}
 
   /** Guarda el evento dentro de la misma transaccion que el cambio que lo origina. */
-  async registrar(em: EntityManager, nuevo: NuevoEvento): Promise<void> {
+  async registrar(em: EntityManager, nuevo: NuevoEvento): Promise<boolean> {
     const { tramite } = nuevo;
-    await em
+    const resultado = await em
       .createQueryBuilder()
       .insert()
       .into(Evento)
@@ -60,6 +61,7 @@ export class EventosService {
       })
       .orIgnore()
       .execute();
+    return Array.isArray(resultado.raw) && resultado.raw.length > 0;
   }
 
   /** Para que el CRM pueda pedir las novedades si prefiere no recibir avisos. */
@@ -81,23 +83,22 @@ export class EventosService {
   /** Entrega al CRM los eventos pendientes. Devuelve cuantos quedaron entregados. */
   async entregarPendientes(): Promise<number> {
     if (!this.env.CRM_WEBHOOK_URL || !this.env.CRM_WEBHOOK_SECRET) return 0;
-    const pendientes = await this.eventos.find({
-      where: { estado: 'PENDIENTE', proximoIntentoAt: LessThanOrEqual(new Date()) },
-      order: { createdAt: 'ASC' },
-      take: LOTE_ENTREGA,
-    });
+    const pendientes = await this.reservarPendientes();
     let entregados = 0;
     for (const evento of pendientes) {
       const exito = await this.enviar(evento, this.env.CRM_WEBHOOK_URL, this.env.CRM_WEBHOOK_SECRET);
       const intentos = evento.intentos + 1;
       if (exito) {
         entregados += 1;
-        await this.eventos.update({ id: evento.id }, { estado: 'ENTREGADO', intentos, entregadoAt: new Date() });
+        await this.eventos.update(
+          { id: evento.id, estado: 'PENDIENTE' },
+          { estado: 'ENTREGADO', intentos, entregadoAt: new Date() },
+        );
         continue;
       }
       const espera = ESPERAS_MINUTOS[Math.min(intentos - 1, ESPERAS_MINUTOS.length - 1)];
       await this.eventos.update(
-        { id: evento.id },
+        { id: evento.id, estado: 'PENDIENTE' },
         {
           estado: intentos >= MAX_INTENTOS ? 'FALLIDO' : 'PENDIENTE',
           intentos,
@@ -106,6 +107,31 @@ export class EventosService {
       );
     }
     return entregados;
+  }
+
+  /** Devuelve a la cola los avisos que agotaron sus intentos. */
+  async reencolarFallidos(): Promise<number> {
+    const resultado = await this.eventos.update(
+      { estado: 'FALLIDO' },
+      { estado: 'PENDIENTE', intentos: 0, proximoIntentoAt: new Date() },
+    );
+    return resultado.affected ?? 0;
+  }
+
+  /** Aparta un lote para esta instancia, de modo que dos copias de Radika no envien lo mismo. */
+  private async reservarPendientes(): Promise<Evento[]> {
+    const filas: unknown = await this.eventos.query(
+      `UPDATE eventos SET proximo_intento_at = now() + make_interval(mins => $2)
+       WHERE id IN (
+         SELECT id FROM eventos
+         WHERE estado = 'PENDIENTE' AND proximo_intento_at <= now()
+         ORDER BY created_at LIMIT $1 FOR UPDATE SKIP LOCKED
+       ) RETURNING id`,
+      [LOTE_ENTREGA, RESERVA_ENTREGA_MINUTOS],
+    );
+    const reservados = (Array.isArray(filas) && Array.isArray(filas[0]) ? filas[0] : filas) as Array<{ id: string }>;
+    if (reservados.length === 0) return [];
+    return this.eventos.find({ where: { id: In(reservados.map((fila) => fila.id)) }, order: { createdAt: 'ASC' } });
   }
 
   private async enviar(evento: Evento, url: string, secreto: string): Promise<boolean> {

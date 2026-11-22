@@ -56,7 +56,7 @@ export class Inicial1700000000000 implements MigrationInterface {
         proximo_intento_at timestamptz NOT NULL DEFAULT now(),
         entregado_at timestamptz,
         clave_dedupe text UNIQUE,
-        created_at timestamptz NOT NULL DEFAULT now()
+        created_at timestamptz NOT NULL DEFAULT clock_timestamp()
       )`);
     await runner.query(`CREATE INDEX ix_eventos_pendientes ON eventos (estado, proximo_intento_at)`);
     await runner.query(`CREATE INDEX ix_eventos_created ON eventos (created_at, id)`);

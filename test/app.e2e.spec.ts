@@ -170,7 +170,7 @@ describe('Radika API', () => {
     const tutela = await crearTutela();
     fuente.procesos = [proceso('2026-11-03')];
     fuente.actuaciones = [actuacion('1', '2026-11-03', 'Radicacion')];
-    await conLlave(api().post(`/v1/tramites/${tutela.id}/revisar`)).expect(200);
+    await app.get(MonitorService).revisar(tutela.id);
     const eventos = app.get(EventosService);
 
     estadoCrm = 500;
@@ -193,17 +193,19 @@ describe('Radika API', () => {
   test('marca fallido tras agotar intentos y no envia si el CRM no esta configurado', async () => {
     const tutela = await crearTutela();
     fuente.procesos = [proceso('2026-11-03')];
-    await conLlave(api().post(`/v1/tramites/${tutela.id}/revisar`)).expect(200);
+    await app.get(MonitorService).revisar(tutela.id);
     await datos.query('UPDATE eventos SET intentos = 7');
     estadoCrm = 500;
     await app.get(EventosService).entregarPendientes();
     expect((await datos.query('SELECT estado FROM eventos'))[0].estado).toBe('FALLIDO');
+    const reintento = await conLlave(api().post('/v1/eventos/reintentar')).expect(200);
+    expect(reintento.body.data).toEqual({ reencolados: 1 });
+    expect(await datos.query('SELECT estado, intentos FROM eventos')).toEqual([{ estado: 'PENDIENTE', intentos: 0 }]);
 
     const env = app.get<Env>(ENV);
     const sinCrm = new EventosService(datos.getRepository('Evento') as never, { ...env, CRM_WEBHOOK_URL: undefined }, fetch);
     expect(await sinCrm.entregarPendientes()).toBe(0);
     const caido = new EventosService(datos.getRepository('Evento') as never, { ...env, CRM_WEBHOOK_URL: 'http://127.0.0.1:1/x' }, fetch);
-    await datos.query(`UPDATE eventos SET estado = 'PENDIENTE', intentos = 0, proximo_intento_at = now()`);
     expect(await caido.entregarPendientes()).toBe(0);
   });
 
@@ -211,7 +213,7 @@ describe('Radika API', () => {
     const tutela = await crearTutela();
     fuente.fallo = new FuenteError('La Rama Judicial respondio 503', 'NO_DISPONIBLE');
     for (let intento = 1; intento <= 5; intento += 1) {
-      const resultado = (await conLlave(api().post(`/v1/tramites/${tutela.id}/revisar`)).expect(200)).body.data;
+      const resultado = await app.get(MonitorService).revisar(tutela.id);
       expect(resultado.error).toMatch(/503/);
     }
     const detalle = (await conLlave(api().get(`/v1/tramites/${tutela.id}`))).body.data.tramite;
@@ -244,14 +246,14 @@ describe('Radika API', () => {
     const tutela = await crearTutela();
     fuente.procesos = [proceso('2026-11-03')];
     fuente.actuaciones = [actuacion('1', '2026-11-04', 'Auto admite tutela')];
-    await conLlave(api().post(`/v1/tramites/${tutela.id}/revisar`)).expect(200);
+    await app.get(MonitorService).revisar(tutela.id);
     await datos.query('DELETE FROM eventos');
     const monitor = app.get(MonitorService);
     const limite = sumarDiasHabiles('2026-11-03', 10);
 
     expect(await monitor.avisarTerminos('2026-11-05')).toBe(0);
     expect(await monitor.avisarTerminos(limite)).toBe(1);
-    expect(await monitor.avisarTerminos(limite)).toBe(1);
+    expect(await monitor.avisarTerminos(limite)).toBe(0);
     expect(await monitor.avisarTerminos(sumarDiasHabiles(limite, 1))).toBe(1);
     const eventos = await datos.query('SELECT tipo FROM eventos ORDER BY created_at');
     expect(eventos).toEqual([{ tipo: 'TERMINO_POR_VENCER' }, { tipo: 'TERMINO_VENCIDO' }]);
@@ -285,9 +287,9 @@ describe('Radika API', () => {
   test('los eventos se pueden recorrer por paginas con cursor', async () => {
     const tutela = await crearTutela();
     fuente.procesos = [proceso('2026-11-03')];
-    await conLlave(api().post(`/v1/tramites/${tutela.id}/revisar`)).expect(200);
+    await app.get(MonitorService).revisar(tutela.id);
     fuente.actuaciones = [actuacion('1', '2026-11-04', 'Auto admite'), actuacion('2', '2026-11-05', 'Traslado')];
-    await conLlave(api().post(`/v1/tramites/${tutela.id}/revisar`)).expect(200);
+    await app.get(MonitorService).revisar(tutela.id);
 
     const primera = (await conLlave(api().get('/v1/eventos?limit=2')).expect(200)).body.data;
     expect(primera.eventos).toHaveLength(2);
@@ -296,6 +298,33 @@ describe('Radika API', () => {
     const vacia = (await conLlave(api().get(`/v1/eventos?cursor=${encodeURIComponent(segunda.siguiente)}`))).body.data;
     expect(vacia).toEqual({ eventos: [], siguiente: null });
     await conLlave(api().get('/v1/eventos?cursor=malo')).expect(400);
+  });
+
+  test('no duplica avisos si dos revisiones coinciden y reporta los procesos reservados', async () => {
+    const tutela = await crearTutela();
+    fuente.procesos = [proceso('2026-11-03')];
+    fuente.actuaciones = [actuacion('1', '2026-11-03', 'Radicacion')];
+    const monitor = app.get(MonitorService);
+    await Promise.all([monitor.revisar(tutela.id), monitor.revisar(tutela.id)]);
+    expect(await datos.query('SELECT tipo FROM eventos')).toEqual([{ tipo: 'TRAMITE_SINCRONIZADO' }]);
+    expect(await datos.query('SELECT count(*)::int AS n FROM actuaciones')).toEqual([{ n: 1 }]);
+
+    const eventos = app.get(EventosService);
+    const entregas = await Promise.all([eventos.entregarPendientes(), eventos.entregarPendientes()]);
+    expect(entregas[0] + entregas[1]).toBe(1);
+    expect(recibidos).toHaveLength(1);
+
+    const reservada = await crearTutela('11001310300120260012305');
+    fuente.procesos = [{ ...proceso('2026-11-03'), privado: true }];
+    await monitor.revisar(reservada.id);
+    const detalle = (await conLlave(api().get(`/v1/tramites/${reservada.id}`))).body.data.tramite;
+    expect(detalle.ultimoError).toMatch(/reservado/);
+  });
+
+  test('un cuerpo mal formado responde 400 y no 500', async () => {
+    const respuesta = await conLlave(api().post('/v1/tramites')).set('content-type', 'application/json').send('{"tipo":').expect(400);
+    expect(respuesta.body).toMatchObject({ success: false, data: null, error: { code: 'BAD_REQUEST' } });
+    await conLlave(api().get('/v1/eventos?cursor=2026-99-99T00:00:00.000Z_816d1e22-b94d-46b2-8ce4-a0a5dd000f8f')).expect(400);
   });
 
   test('el planificador respeta el apagado, no se pisa y no se cae con errores', async () => {
@@ -320,5 +349,15 @@ describe('Radika API', () => {
     await encendido.ejecutar('x', async () => void (ejecuciones += 1));
     expect(ejecuciones).toBe(1);
     await expect(Promise.all([encendido.revisarTramites(), encendido.entregarAvisos(), encendido.avisarTerminos()])).resolves.toBeDefined();
+  });
+
+  test('limita las revisiones manuales por minuto', async () => {
+    const tutela = await crearTutela();
+    const estados: number[] = [];
+    for (let intento = 0; intento < 12; intento += 1) {
+      estados.push((await conLlave(api().post(`/v1/tramites/${tutela.id}/revisar`))).status);
+    }
+    expect(estados).toContain(429);
+    await api().get('/health').expect(200);
   });
 });

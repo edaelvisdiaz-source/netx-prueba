@@ -19,6 +19,7 @@ const ESPERA_BASE_ERROR_MINUTOS = 15;
 const ERRORES_PARA_AVISAR = 5;
 const VARIACION_INTERVALO = 0.1;
 const LARGO_MAXIMO_NOTA = 400;
+const MAX_PROCESOS_POR_RADICADO = 20;
 
 type ActuacionEncontrada = ActuacionFuente & { readonly despacho: string | null };
 
@@ -72,7 +73,8 @@ export class MonitorService {
     const fuente = this.fuentes.obtener(tramite.fuente);
     const primera = tramite.sincronizadoAt === null;
     try {
-      const procesos = (await fuente.buscarProcesos(tramite.radicado)).filter((proceso) => !proceso.privado);
+      const todos = await fuente.buscarProcesos(tramite.radicado);
+      const procesos = todos.filter((proceso) => !proceso.privado).slice(0, MAX_PROCESOS_POR_RADICADO);
       const encontradas: ActuacionEncontrada[] = [];
       for (const proceso of procesos) {
         const lista = await fuente.listarActuaciones(proceso.idFuente);
@@ -90,7 +92,10 @@ export class MonitorService {
           {
             ultimaRevisionAt: new Date(),
             proximaRevisionAt: this.proximaRevision(),
-            ultimoError: 'La fuente aun no muestra este radicado',
+            ultimoError:
+              todos.length > 0
+                ? 'La fuente marca este proceso como reservado; no publica sus actuaciones'
+                : 'La fuente aun no muestra este radicado',
             erroresConsecutivos: 0,
           },
         );
@@ -127,7 +132,7 @@ export class MonitorService {
     return reservados.length;
   }
 
-  /** Deja un aviso por cada termino de tutela que esta por vencer o ya vencio. */
+  /** Deja un aviso por cada termino de tutela por vencer o vencido. Devuelve cuantos avisos nuevos creo. */
   async avisarTerminos(hoy: FechaISO = hoyEnColombia()): Promise<number> {
     const tutelas = await this.tramites.find({
       where: { tipo: 'TUTELA', estado: 'ACTIVO', sincronizadoAt: Not(IsNull()) },
@@ -148,13 +153,13 @@ export class MonitorService {
         const porVencer = termino.estado === 'POR_VENCER';
         const falloVencido = termino.estado === 'VENCIDO' && termino.clave === 'FALLO_PRIMERA_INSTANCIA';
         if (!porVencer && !falloVencido) continue;
-        await this.eventos.registrar(this.dataSource.manager, {
+        const nuevo = await this.eventos.registrar(this.dataSource.manager, {
           tramite: tutela,
           tipo: porVencer ? 'TERMINO_POR_VENCER' : 'TERMINO_VENCIDO',
           datos: { termino },
           claveDedupe: `termino:${tutela.id}:${termino.clave}:${termino.estado}:${termino.fechaLimite}`,
         });
-        avisos += 1;
+        if (nuevo) avisos += 1;
       }
     }
     return avisos;
@@ -214,6 +219,7 @@ export class MonitorService {
         await this.eventos.registrar(em, {
           tramite,
           tipo: 'TRAMITE_SINCRONIZADO',
+          claveDedupe: `sincronizado:${tramite.id}`,
           datos: { actuaciones: nuevas.length, despacho: despachos.join(' | ') || null },
         });
         return;
@@ -260,6 +266,7 @@ export class MonitorService {
         await this.eventos.registrar(em, {
           tramite,
           tipo: 'ERROR_FUENTE',
+          claveDedupe: `error:${tramite.id}:${hoyEnColombia()}`,
           datos: { mensaje: error.message, codigo: error.codigo, erroresConsecutivos: errores },
         });
       }

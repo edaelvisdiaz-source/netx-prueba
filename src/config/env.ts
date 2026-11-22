@@ -5,9 +5,11 @@ const booleano = z.enum(['true', 'false']).transform((valor) => valor === 'true'
 
 const esquema = z
   .object({
-    NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
+    NODE_ENV: z.enum(['development', 'test', 'production']).default('production'),
     DATABASE_URL: z.string().url(),
     PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+    /** Cuantos proxies de confianza hay delante (0 si Radika recibe las peticiones directo). */
+    TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(0),
     RADIKA_API_KEYS: z
       .string()
       .transform((valor) => valor.split(',').map((llave) => llave.trim()).filter(Boolean))
