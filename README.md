@@ -71,6 +71,7 @@ siempre el mismo sobre:
 | `PATCH /v1/tramites/:id` | Cambia `estado` (`ACTIVO`, `PAUSADO`, `CERRADO`), `referenciaCrm` o `clienteNombre` |
 | `DELETE /v1/tramites/:id` | Elimina el trámite y su historial |
 | `POST /v1/tramites/:id/revisar` | Revisa ahora mismo, sin esperar el turno |
+| `POST /v1/tramites/:id/actuaciones` | Registra una actuación revisada a mano (`fecha`, `titulo`, `anotacion`) |
 | `GET /v1/eventos` | Novedades en orden, con `cursor` y `limit` |
 | `POST /v1/eventos/reintentar` | Vuelve a poner en cola los avisos que agotaron sus intentos |
 
@@ -150,6 +151,14 @@ lenguaje sencillo. El resultado se guarda con la actuación y viaja en el aviso:
   reintenta sola con un modelo de respaldo.
 - El resumen es una ayuda de lectura, no un concepto jurídico.
 
+## Revisión asistida
+
+Para lo que Radika no consulta sola (SAMAI, y por ahora Ministerio de Educación, SAC y
+Cancillería), el flujo es: abrir el enlace de `enlacesConsulta`, revisar, y registrar lo que
+cambió con `POST /v1/tramites/:id/actuaciones`. Esa actuación se clasifica, se resume y
+genera el mismo aviso `ACTUACION_NUEVA` que una detectada automáticamente, con
+`"origen": "MANUAL"`.
+
 ## Términos de tutela
 
 Se cuentan en días hábiles de Colombia (sin sábados, domingos ni festivos):
@@ -166,6 +175,10 @@ se deduce por palabras clave y es una ayuda, no un concepto jurídico.
 - La consulta usa el servicio público de la página de Consulta de Procesos de la Rama Judicial.
   No es una API con contrato oficial: puede cambiar o caerse sin aviso. Radika lo detecta y lo
   reporta en `ultimoError` y con el aviso `ERROR_FUENTE`.
-- Los despachos que publican en otros sistemas (TYBA, SAMAI, Corte Constitucional) no están
-  cubiertos todavía.
+- **SAMAI** (juzgados y tribunales administrativos, Consejo de Estado): su buscador es público,
+  pero la ficha con las actuaciones pide una verificación "no soy un robot". Radika no la
+  salta. El detalle de cada trámite trae en `enlacesConsulta` el enlace directo a la ficha
+  para revisarla a mano y registrar la novedad con `POST /v1/tramites/:id/actuaciones`.
+- **TYBA** pide captcha y la **Corte Constitucional** publica la selección de tutelas en autos;
+  ninguna de las dos tiene consulta automática en Radika.
 - Radika no envía WhatsApp ni correos por su cuenta: entrega el aviso al CRM y este decide.

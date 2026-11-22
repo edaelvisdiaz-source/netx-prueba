@@ -8,7 +8,9 @@ import { EventosService } from '../notificaciones/eventos.service';
 import { ResumenActuacion, Resumidor } from '../resumen/resumidor';
 import { FechaISO, hoyEnColombia } from '../terminos/dias-habiles';
 import { calcularTerminosTutela } from '../terminos/tutela';
+import { randomUUID } from 'node:crypto';
 import { Actuacion } from '../tramites/actuacion.entity';
+import { RegistrarActuacion } from '../tramites/dto';
 import { clasificarActuacion } from '../tramites/clasificacion';
 import { Tramite } from '../tramites/tramite.entity';
 import { TramitesService } from '../tramites/tramites.service';
@@ -110,6 +112,65 @@ export class MonitorService {
       await this.registrarError(tramite, error);
       return { tramiteId, encontrado: false, primeraSincronizacion: primera, actuacionesNuevas: 0, error: error.message };
     }
+  }
+
+  /**
+   * Registra una actuacion que alguien reviso a mano (tramites sin consulta automatica o fuentes
+   * que piden verificacion humana). Produce el mismo aviso que una actuacion detectada sola.
+   */
+  async registrarManual(tramiteId: string, datos: RegistrarActuacion): Promise<Actuacion> {
+    const tramite = await this.tramitesService.obtener(tramiteId);
+    const existentes = await this.actuaciones.find({
+      where: { tramiteId },
+      select: { fecha: true, titulo: true },
+      order: { fecha: 'DESC' },
+    });
+    const encontrada: ActuacionEncontrada = {
+      clave: `manual:${randomUUID()}`,
+      fecha: datos.fecha,
+      titulo: datos.titulo,
+      anotacion: datos.anotacion ?? null,
+      fechaInicioTermino: null,
+      fechaFinTermino: null,
+      fechaRegistro: hoyEnColombia(),
+      despacho: tramite.despacho,
+    };
+    const categoria = clasificarActuacion(encontrada.titulo, encontrada.anotacion);
+    const resumen = (await this.resumir(tramite, [encontrada], existentes)).get(encontrada.clave) ?? null;
+    return this.dataSource.transaction(async (em) => {
+      const guardada = await em.save(
+        em.create(Actuacion, {
+          tramiteId,
+          claveFuente: encontrada.clave,
+          despacho: encontrada.despacho,
+          fecha: encontrada.fecha,
+          titulo: encontrada.titulo,
+          anotacion: encontrada.anotacion,
+          fechaInicioTermino: null,
+          fechaFinTermino: null,
+          fechaRegistro: encontrada.fechaRegistro,
+          categoria,
+          resumen,
+        }),
+      );
+      await em.update(
+        Tramite,
+        { id: tramiteId },
+        { ultimaActuacionFecha: maximo([tramite.ultimaActuacionFecha, encontrada.fecha]) },
+      );
+      await this.eventos.registrar(em, {
+        tramite,
+        tipo: 'ACTUACION_NUEVA',
+        claveDedupe: `actuacion:${tramiteId}:${encontrada.clave}`,
+        datos: {
+          actuacion: { fecha: encontrada.fecha, titulo: encontrada.titulo, anotacion: encontrada.anotacion, despacho: encontrada.despacho, categoria },
+          resumen,
+          notaSugerida: resumen ? `Radika: ${resumen.resumen}`.slice(0, LARGO_MAXIMO_NOTA) : notaSugerida(encontrada),
+          origen: 'MANUAL',
+        },
+      });
+      return guardada;
+    });
   }
 
   /** Toma los tramites a los que ya les toca revision y los revisa uno por uno. */

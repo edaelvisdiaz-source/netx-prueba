@@ -371,6 +371,36 @@ describe('Radika API', () => {
     });
   });
 
+  test('permite registrar a mano lo que no tiene consulta automatica y da los enlaces oficiales', async () => {
+    resumidor.activo = true;
+    const convalidacion = (
+      await conLlave(api().post('/v1/tramites')).send({ tipo: 'CONVALIDACION_MEN', radicado: '2026-ER-777', referenciaCrm: 'J75QU6YR' })
+    ).body.data;
+    const creada = await conLlave(api().post(`/v1/tramites/${convalidacion.id}/actuaciones`))
+      .send({ fecha: '2026-11-20', titulo: 'Requerimiento de documentos', anotacion: 'Falta el acta de grado' })
+      .expect(201);
+    expect(creada.body.data).toMatchObject({ categoria: 'REQUERIMIENTO', resumen: { urgencia: 'MEDIA' } });
+    const detalle = (await conLlave(api().get(`/v1/tramites/${convalidacion.id}`))).body.data;
+    expect(detalle).toMatchObject({ tramite: { ultimaActuacionFecha: '2026-11-20' }, enlacesConsulta: [] });
+    expect(detalle.actuaciones).toHaveLength(1);
+    const [aviso] = await datos.query('SELECT tipo, payload FROM eventos');
+    expect(aviso).toMatchObject({
+      tipo: 'ACTUACION_NUEVA',
+      payload: { tramite: { referenciaCrm: 'J75QU6YR' }, datos: { origen: 'MANUAL', notaSugerida: 'Radika: Resumen de Requerimiento de documentos' } },
+    });
+    await conLlave(api().post(`/v1/tramites/${convalidacion.id}/actuaciones`)).send({ fecha: '2026-02-31', titulo: 'x' }).expect(400);
+    await conLlave(api().post(`/v1/tramites/${convalidacion.id}/actuaciones`)).send({ fecha: '2026-11-20' }).expect(400);
+
+    const administrativa = await crearTutela('11001333400120260012300');
+    const enlaces = (await conLlave(api().get(`/v1/tramites/${administrativa.id}`))).body.data.enlacesConsulta;
+    expect(enlaces.map((enlace: { url: string }) => enlace.url)).toEqual([
+      'https://consultaprocesos.ramajudicial.gov.co/Procesos/NumeroRadicacion',
+      'https://samai.consejodeestado.gov.co/Vistas/Casos/list_procesos.aspx?guid=110013334001202600123001100133',
+    ]);
+    const civil = await crearTutela();
+    expect((await conLlave(api().get(`/v1/tramites/${civil.id}`))).body.data.enlacesConsulta).toHaveLength(1);
+  });
+
   test('un cuerpo mal formado responde 400 y no 500', async () => {
     const respuesta = await conLlave(api().post('/v1/tramites')).set('content-type', 'application/json').send('{"tipo":').expect(400);
     expect(respuesta.body).toMatchObject({ success: false, data: null, error: { code: 'BAD_REQUEST' } });

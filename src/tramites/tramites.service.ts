@@ -5,6 +5,7 @@ import { hoyEnColombia } from '../terminos/dias-habiles';
 import { calcularTerminosTutela, Termino } from '../terminos/tutela';
 import { Actuacion } from './actuacion.entity';
 import { ActualizarTramite, CrearTramite, ListarTramites } from './dto';
+import { EnlaceConsulta, enlacesDeConsulta } from './enlaces';
 import { normalizarRadicadoJudicial, normalizarRadicadoLibre } from './radicado';
 import { esTipoJudicial, fuentePorDefecto } from './tipos';
 import { Tramite } from './tramite.entity';
@@ -15,6 +16,7 @@ export interface DetalleTramite {
   readonly tramite: Tramite;
   readonly actuaciones: ReadonlyArray<Actuacion>;
   readonly terminos: ReadonlyArray<Termino>;
+  readonly enlacesConsulta: ReadonlyArray<EnlaceConsulta>;
 }
 
 @Injectable()
@@ -88,7 +90,7 @@ export class TramitesService {
       tramite.tipo === 'TUTELA'
         ? calcularTerminosTutela({ fechaRadicacion: tramite.fechaRadicacion, actuaciones, hoy: hoyEnColombia() })
         : [];
-    return { tramite, actuaciones, terminos };
+    return { tramite, actuaciones, terminos, enlacesConsulta: enlacesDeConsulta(tramite.tipo, tramite.radicado) };
   }
 
   async actualizar(id: string, cambios: ActualizarTramite): Promise<Tramite> {

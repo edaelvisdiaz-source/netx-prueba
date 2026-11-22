@@ -8,6 +8,7 @@ import { MonitorService } from '../monitor/monitor.service';
 import { EventosService } from '../notificaciones/eventos.service';
 import {
   actualizarTramiteSchema, crearTramiteSchema, listarEventosSchema, listarTramitesSchema,
+  registrarActuacionSchema,
 } from './dto';
 import { TramitesService } from './tramites.service';
 
@@ -63,6 +64,11 @@ export class TramitesController {
   @HttpCode(HttpStatus.OK)
   async revisar(@Param('id', ParseUUIDPipe) id: string) {
     return ok(await this.monitor.revisar(id));
+  }
+
+  @Post('v1/tramites/:id/actuaciones')
+  async registrarActuacion(@Param('id', ParseUUIDPipe) id: string, @Body() cuerpo: unknown) {
+    return ok(await this.monitor.registrarManual(id, validar(registrarActuacionSchema, cuerpo)));
   }
 
   @Get('v1/eventos')

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { soloFecha } from '../terminos/dias-habiles';
 import { ESTADOS_TRAMITE, FUENTES, TIPOS_TRAMITE } from './tipos';
 
 const LIMITE_MAXIMO = 100;
@@ -37,6 +38,15 @@ export const actualizarTramiteSchema = z
   .strict()
   .refine((cambios) => Object.keys(cambios).length > 0, { message: 'envia al menos un campo' });
 export type ActualizarTramite = z.infer<typeof actualizarTramiteSchema>;
+
+export const registrarActuacionSchema = z
+  .object({
+    fecha: z.string().refine((valor) => soloFecha(valor) === valor, 'usa el formato AAAA-MM-DD'),
+    titulo: z.string().trim().min(1).max(200),
+    anotacion: z.string().trim().min(1).max(2000).optional(),
+  })
+  .strict();
+export type RegistrarActuacion = z.infer<typeof registrarActuacionSchema>;
 
 export const listarEventosSchema = z
   .object({
