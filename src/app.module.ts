@@ -13,6 +13,8 @@ import { MonitorService } from './monitor/monitor.service';
 import { Planificador } from './monitor/planificador';
 import { Evento } from './notificaciones/evento.entity';
 import { EventosService } from './notificaciones/eventos.service';
+import { ClaudeResumidor, CLIENTE_ANTHROPIC, crearClienteAnthropic } from './resumen/claude.resumidor';
+import { Resumidor } from './resumen/resumidor';
 import { Actuacion } from './tramites/actuacion.entity';
 import { Tramite } from './tramites/tramite.entity';
 import { TramitesController } from './tramites/tramites.controller';
@@ -53,6 +55,8 @@ class ConfigModule {}
     { provide: APP_FILTER, useClass: FiltroErrores },
     { provide: APP_GUARD, useClass: ThrottlerGuard },
     { provide: APP_GUARD, useClass: ApiKeyGuard },
+    { provide: CLIENTE_ANTHROPIC, inject: [ENV], useFactory: crearClienteAnthropic },
+    { provide: Resumidor, useClass: ClaudeResumidor },
     RamaJudicialFuente,
     FuentesRegistry,
     TramitesService,

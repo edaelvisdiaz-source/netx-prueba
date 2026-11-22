@@ -9,7 +9,7 @@ novedades y las entrega al CRM para que actualice la pestaña de Seguimiento.
 | Fase | Alcance | Estado |
 |---|---|---|
 | 1 | Tutelas y procesos judiciales (Rama Judicial), términos de tutela, avisos al CRM | Construida; formato de la Rama Judicial comprobado con una tutela real |
-| 2 | Resumen de cada actuación con IA | Pendiente |
+| 2 | Resumen de cada actuación con IA | Construida; falta probarla con una llave real de la API |
 | 3 | Ministerio de Educación: convalidaciones y legalizaciones (con usuario del cliente) | Pendiente |
 | 4 | Cancillería (apostillas) y SAC | Pendiente |
 
@@ -125,6 +125,30 @@ Cada aviso trae `X-Radika-Timestamp` y `X-Radika-Signature`. El CRM debe calcula
 `sha256=` + HMAC-SHA256 de `"<timestamp>.<cuerpo tal como llegó>"` con el secreto compartido,
 compararlo con la firma y rechazar avisos con más de 5 minutos de antigüedad. `X-Radika-Event-Id`
 sirve para descartar repetidos.
+
+## Resumen con IA
+
+Si se define `ANTHROPIC_API_KEY`, cada actuación nueva se envía a Claude y vuelve explicada en
+lenguaje sencillo. El resultado se guarda con la actuación y viaja en el aviso:
+
+```json
+"resumen": {
+  "resumen": "El juez decidió la tutela en primera instancia.",
+  "queSignifica": "Ya hay fallo; hay que leerlo para saber si fue a favor.",
+  "accionSugerida": "Revisar el fallo con el abogado y avisar al cliente.",
+  "urgencia": "ALTA"
+}
+```
+
+- Cuando hay resumen, `notaSugerida` lo usa; si no, lleva el título de la actuación.
+- Solo se resumen las novedades, no el historial de la primera sincronización.
+- A Claude se le envían el tipo de trámite, el despacho, la fecha, el título y la anotación de
+  la actuación, y los títulos de las anteriores. No se envían el nombre del cliente ni las
+  partes, salvo que el juzgado los escriba dentro de la anotación.
+- Si la API falla o no hay llave, el aviso sale igual con `"resumen": null`.
+- El modelo se cambia con `RESUMEN_IA_MODELO`. Si el modelo declina una petición, la API la
+  reintenta sola con un modelo de respaldo.
+- El resumen es una ayuda de lectura, no un concepto jurídico.
 
 ## Términos de tutela
 

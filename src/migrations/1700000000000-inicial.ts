@@ -41,6 +41,7 @@ export class Inicial1700000000000 implements MigrationInterface {
         fecha_fin_termino date,
         fecha_registro date,
         categoria text NOT NULL CHECK (categoria IN ('ADMISION','FALLO','IMPUGNACION','DESACATO','REQUERIMIENTO','REMISION_CORTE','OTRA')),
+        resumen jsonb,
         detectada_at timestamptz NOT NULL DEFAULT now()
       )`);
     await runner.query(`CREATE UNIQUE INDEX uq_actuaciones_tramite_clave ON actuaciones (tramite_id, clave_fuente)`);

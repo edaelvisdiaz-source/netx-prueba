@@ -1,4 +1,5 @@
 import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
+import type { ResumenActuacion } from '../resumen/resumidor';
 import { CategoriaActuacion } from './tipos';
 
 @Entity('actuaciones')
@@ -15,5 +16,6 @@ export class Actuacion {
   @Column({ name: 'fecha_fin_termino', type: 'date', nullable: true }) fechaFinTermino!: string | null;
   @Column({ name: 'fecha_registro', type: 'date', nullable: true }) fechaRegistro!: string | null;
   @Column({ type: 'text' }) categoria!: CategoriaActuacion;
+  @Column({ type: 'jsonb', nullable: true }) resumen!: ResumenActuacion | null;
   @CreateDateColumn({ name: 'detectada_at', type: 'timestamptz' }) detectadaAt!: Date;
 }

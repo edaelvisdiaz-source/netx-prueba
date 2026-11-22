@@ -27,6 +27,10 @@ const esquema = z
     REVISION_LOTE: z.coerce.number().int().min(1).max(100).default(10),
     SCHEDULER_ENABLED: booleano.default('true'),
     CONTACTO_USER_AGENT: z.string().min(3).default('Radika/0.1'),
+    /** Opcional. Sin llave, Radika funciona igual pero no redacta resumenes. */
+    ANTHROPIC_API_KEY: z.string().min(20).optional().or(z.literal('').transform(() => undefined)),
+    RESUMEN_IA_MODELO: z.string().min(3).default('claude-opus-5-5'),
+    RESUMENES_POR_REVISION: z.coerce.number().int().min(0).max(50).default(10),
   })
   .superRefine((env, contexto) => {
     if (env.CRM_WEBHOOK_URL && !env.CRM_WEBHOOK_SECRET) {

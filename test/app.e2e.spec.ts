@@ -11,6 +11,7 @@ import { RamaJudicialFuente } from '../src/fuentes/rama-judicial.fuente';
 import { MonitorService } from '../src/monitor/monitor.service';
 import { Planificador } from '../src/monitor/planificador';
 import { EventosService, firmar } from '../src/notificaciones/eventos.service';
+import { EntradaResumen, ResumenActuacion, Resumidor } from '../src/resumen/resumidor';
 import { sumarDiasHabiles } from '../src/terminos/dias-habiles';
 
 const LLAVE = 'llave-de-prueba-'.padEnd(40, 'x');
@@ -30,6 +31,18 @@ class FuenteFalsa extends Fuente {
 
   async listarActuaciones(): Promise<ActuacionFuente[]> {
     return this.actuaciones;
+  }
+}
+
+class ResumidorFalso extends Resumidor {
+  activo = false;
+  pedidos: EntradaResumen[] = [];
+
+  async resumir(entrada: EntradaResumen): Promise<ResumenActuacion | null> {
+    if (!this.activo) return null;
+    this.pedidos.push(entrada);
+    if (entrada.titulo === 'Traslado') return null;
+    return { resumen: `Resumen de ${entrada.titulo}`, queSignifica: 'x', accionSugerida: 'y', urgencia: 'MEDIA' };
   }
 }
 
@@ -53,6 +66,7 @@ describe('Radika API', () => {
   let datos: DataSource;
   let crm: Server;
   const fuente = new FuenteFalsa();
+  const resumidor = new ResumidorFalso();
   const recibidos: Array<{ cuerpo: string; firma: string; marca: string }> = [];
   let estadoCrm = 200;
 
@@ -79,11 +93,14 @@ describe('Radika API', () => {
       CRM_WEBHOOK_URL: `http://127.0.0.1:${(crm.address() as AddressInfo).port}/hook`,
       CRM_WEBHOOK_SECRET: SECRETO,
       SCHEDULER_ENABLED: 'false',
+      ANTHROPIC_API_KEY: '',
       REVISION_LOTE: '10',
     });
     const modulo = await Test.createTestingModule({ imports: [AppModule] })
       .overrideProvider(RamaJudicialFuente)
       .useValue(fuente)
+      .overrideProvider(Resumidor)
+      .useValue(resumidor)
       .compile();
     app = modulo.createNestApplication();
     await app.init();
@@ -95,6 +112,8 @@ describe('Radika API', () => {
     fuente.procesos = [];
     fuente.actuaciones = [];
     fuente.fallo = null;
+    resumidor.activo = false;
+    resumidor.pedidos = [];
     recibidos.length = 0;
     estadoCrm = 200;
   });
@@ -319,6 +338,37 @@ describe('Radika API', () => {
     await monitor.revisar(reservada.id);
     const detalle = (await conLlave(api().get(`/v1/tramites/${reservada.id}`))).body.data.tramite;
     expect(detalle.ultimoError).toMatch(/reservado/);
+  });
+
+  test('resume solo las novedades y las incluye en el aviso', async () => {
+    resumidor.activo = true;
+    const tutela = await crearTutela();
+    const monitor = app.get(MonitorService);
+    fuente.procesos = [proceso('2026-11-03')];
+    fuente.actuaciones = [actuacion('1', '2026-11-03', 'Radicacion'), actuacion('2', '2026-11-04', 'Auto admite tutela')];
+    await monitor.revisar(tutela.id);
+    expect(resumidor.pedidos).toHaveLength(0);
+
+    fuente.actuaciones = [
+      ...fuente.actuaciones,
+      actuacion('4', '2026-11-17', 'Sentencia de primera instancia'),
+      actuacion('3', '2026-11-10', 'Traslado'),
+    ];
+    await monitor.revisar(tutela.id);
+    expect(resumidor.pedidos.map((pedido) => pedido.titulo)).toEqual(['Traslado', 'Sentencia de primera instancia']);
+    expect(resumidor.pedidos[1].anteriores.map((anterior) => anterior.titulo)).toEqual(['Traslado', 'Auto admite tutela', 'Radicacion']);
+    expect(resumidor.pedidos[1]).toMatchObject({ tipoTramite: 'TUTELA', categoria: 'FALLO', despacho: 'JUZGADO 5 CIVIL' });
+
+    const guardadas = await datos.query(`SELECT titulo, resumen->>'resumen' AS resumen FROM actuaciones ORDER BY fecha`);
+    expect(guardadas.map((fila: { resumen: string | null }) => fila.resumen)).toEqual([
+      null, null, null, 'Resumen de Sentencia de primera instancia',
+    ]);
+    const avisos = await datos.query(`SELECT payload FROM eventos WHERE tipo = 'ACTUACION_NUEVA' ORDER BY payload->'datos'->'actuacion'->>'fecha'`);
+    expect(avisos[0].payload.datos).toMatchObject({ resumen: null, notaSugerida: expect.stringContaining('Traslado') });
+    expect(avisos[1].payload.datos).toMatchObject({
+      resumen: { urgencia: 'MEDIA' },
+      notaSugerida: 'Radika: Resumen de Sentencia de primera instancia',
+    });
   });
 
   test('un cuerpo mal formado responde 400 y no 500', async () => {

@@ -5,6 +5,7 @@ import { ENV, Env } from '../config/env';
 import { ActuacionFuente, FuenteError } from '../fuentes/fuente';
 import { FuentesRegistry } from '../fuentes/fuentes.registry';
 import { EventosService } from '../notificaciones/eventos.service';
+import { ResumenActuacion, Resumidor } from '../resumen/resumidor';
 import { FechaISO, hoyEnColombia } from '../terminos/dias-habiles';
 import { calcularTerminosTutela } from '../terminos/tutela';
 import { Actuacion } from '../tramites/actuacion.entity';
@@ -62,6 +63,7 @@ export class MonitorService {
     private readonly tramitesService: TramitesService,
     private readonly fuentes: FuentesRegistry,
     private readonly eventos: EventosService,
+    private readonly resumidor: Resumidor,
   ) {}
 
   /** Consulta la fuente, guarda las actuaciones que no estaban y deja los avisos para el CRM. */
@@ -171,11 +173,17 @@ export class MonitorService {
     encontradas: ReadonlyArray<ActuacionEncontrada>,
     primera: boolean,
   ): Promise<number> {
-    const existentes = await this.actuaciones.find({ where: { tramiteId: tramite.id }, select: { claveFuente: true } });
+    const existentes = await this.actuaciones.find({
+      where: { tramiteId: tramite.id },
+      select: { claveFuente: true, fecha: true, titulo: true },
+      order: { fecha: 'DESC' },
+    });
     const conocidas = new Set(existentes.map((actuacion) => actuacion.claveFuente));
     const nuevas = encontradas.filter((actuacion) => !conocidas.has(actuacion.clave));
     const despachos = [...new Set(procesos.map((proceso) => proceso.despacho).filter(Boolean))];
     const ahora = new Date();
+    // Solo se resumen las novedades: el historial de la primera sincronizacion no genera avisos.
+    const resumenes = primera ? new Map<string, ResumenActuacion>() : await this.resumir(tramite, nuevas, existentes);
 
     await this.dataSource.transaction(async (em) => {
       if (nuevas.length > 0) {
@@ -195,6 +203,7 @@ export class MonitorService {
               fechaFinTermino: actuacion.fechaFinTermino,
               fechaRegistro: actuacion.fechaRegistro,
               categoria: clasificarActuacion(actuacion.titulo, actuacion.anotacion),
+              resumen: resumenes.get(actuacion.clave) ?? null,
             })),
           )
           .orIgnore()
@@ -237,12 +246,40 @@ export class MonitorService {
               despacho: actuacion.despacho,
               categoria: clasificarActuacion(actuacion.titulo, actuacion.anotacion),
             },
-            notaSugerida: notaSugerida(actuacion),
+            resumen: resumenes.get(actuacion.clave) ?? null,
+            notaSugerida: resumenes.get(actuacion.clave)?.resumen
+              ? `Radika: ${resumenes.get(actuacion.clave)?.resumen}`.slice(0, LARGO_MAXIMO_NOTA)
+              : notaSugerida(actuacion),
           },
         });
       }
     });
     return nuevas.length;
+  }
+
+  /** Pide el resumen de cada novedad, de la mas antigua a la mas reciente. Un fallo no detiene la revision. */
+  private async resumir(
+    tramite: Tramite,
+    nuevas: ReadonlyArray<ActuacionEncontrada>,
+    existentes: ReadonlyArray<{ fecha: string; titulo: string }>,
+  ): Promise<Map<string, ResumenActuacion>> {
+    const resumenes = new Map<string, ResumenActuacion>();
+    const enOrden = [...nuevas].sort((a, b) => a.fecha.localeCompare(b.fecha)).slice(-this.env.RESUMENES_POR_REVISION);
+    let anteriores = existentes.map(({ fecha, titulo }) => ({ fecha, titulo }));
+    for (const actuacion of this.env.RESUMENES_POR_REVISION > 0 ? enOrden : []) {
+      const resumen = await this.resumidor.resumir({
+        tipoTramite: tramite.tipo,
+        despacho: actuacion.despacho,
+        fecha: actuacion.fecha,
+        titulo: actuacion.titulo,
+        anotacion: actuacion.anotacion,
+        categoria: clasificarActuacion(actuacion.titulo, actuacion.anotacion),
+        anteriores,
+      });
+      if (resumen) resumenes.set(actuacion.clave, resumen);
+      anteriores = [{ fecha: actuacion.fecha, titulo: actuacion.titulo }, ...anteriores];
+    }
+    return resumenes;
   }
 
   private async registrarError(tramite: Tramite, error: FuenteError): Promise<void> {
