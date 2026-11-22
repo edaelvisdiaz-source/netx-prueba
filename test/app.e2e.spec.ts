@@ -151,6 +151,10 @@ describe('Radika API', () => {
     const sinLlave = await api().get('/v1/tramites').expect(401);
     expect(sinLlave.body).toMatchObject({ success: false, data: null, error: { code: 'UNAUTHORIZED' } });
     await api().get('/v1/tramites').set('x-api-key', 'otra-llave').expect(401);
+    const consulta = jest.spyOn(datos, 'query').mockRejectedValueOnce(new Error('sin conexion'));
+    const caida = await api().get('/health').expect(503);
+    expect(caida.body).toMatchObject({ success: false, error: { code: 'SERVICE_UNAVAILABLE' } });
+    consulta.mockRestore();
   });
 
   test('valida los datos al crear un tramite', async () => {

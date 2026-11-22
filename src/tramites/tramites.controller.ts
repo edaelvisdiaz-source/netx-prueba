@@ -1,7 +1,10 @@
 import {
   Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Query,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
+import { InjectDataSource } from '@nestjs/typeorm';
+import { DataSource } from 'typeorm';
 import { Publico } from '../auth/api-key.guard';
 import { ok, validar } from '../common/respuesta';
 import { BuzonService } from '../correo/buzon.service';
@@ -23,12 +26,18 @@ export class TramitesController {
     private readonly monitor: MonitorService,
     private readonly eventos: EventosService,
     private readonly buzon: BuzonService,
+    @InjectDataSource() private readonly datos: DataSource,
   ) {}
 
   @Publico()
   @SkipThrottle()
   @Get('health')
-  salud() {
+  async salud() {
+    try {
+      await this.datos.query('SELECT 1');
+    } catch {
+      throw new ServiceUnavailableException('La base de datos no responde');
+    }
     return ok({ estado: 'ok' });
   }
 

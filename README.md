@@ -22,7 +22,7 @@ Requiere Node 20 o superior y PostgreSQL 16.
 
 ```bash
 npm install
-cp .env.example .env        # completa los valores
+cp .env.example .env        # completa los valores, incluido DATABASE_URL
 npm run build
 npm start                   # crea las tablas al arrancar
 ```
@@ -34,6 +34,42 @@ En producción deja `NODE_ENV=production` (es el valor por defecto y exige `http
 dirección del CRM), agrega `?sslmode=require` a `DATABASE_URL` y, si hay un balanceador
 delante, pon en `TRUST_PROXY_HOPS` cuántos son para que el límite de peticiones cuente por
 cliente real. El límite es de 120 peticiones por minuto, y 10 por minuto para `revisar`.
+
+## Despliegue
+
+Radika es un solo proceso que debe estar encendido todo el tiempo (revisa trámites y correo
+cada pocos minutos) y una base de datos PostgreSQL 16. No encaja en funciones bajo demanda.
+
+**En un servidor con Docker**, con su propia base de datos:
+
+```bash
+cp .env.example .env     # completa RADIKA_API_KEYS y POSTGRES_PASSWORD; lo demás es opcional
+docker compose up -d --build
+curl http://127.0.0.1:3000/health
+```
+
+**Con una base de datos externa** (por ejemplo RDS): quita el servicio `db` de
+`docker-compose.yml` y define `DATABASE_URL` en `.env`. Radika crea sus tablas al arrancar;
+basta con una base vacía y un usuario dueño de ella.
+
+Lo que el servidor necesita:
+
+| Necesidad | Detalle |
+|---|---|
+| Salida a internet | Puerto 448 hacia `consultaprocesos.ramajudicial.gov.co`, 993 hacia el correo, 443 hacia el CRM y la API de Anthropic |
+| Entrada | Solo desde el CRM, por HTTPS. El puerto de Radika se publica en `127.0.0.1`; delante va un proxy con certificado (Caddy, Nginx o un balanceador) |
+| Memoria | 1 GB es suficiente |
+| Secretos | `RADIKA_API_KEYS`, `DATABASE_URL` o `POSTGRES_PASSWORD`, `CRM_WEBHOOK_SECRET`, `IMAP_PASSWORD`, `ANTHROPIC_API_KEY`: en el gestor de secretos del servidor, nunca en el repositorio |
+| Una sola copia | Puede haber varias sin duplicar avisos, pero una basta para este volumen |
+
+Después de desplegar, comprueba lo que las pruebas automáticas solo simulan:
+
+1. `docker compose exec radika node -e "fetch('https://consultaprocesos.ramajudicial.gov.co:448/api/v2/Procesos/Consulta/NumeroRadicacion?numero=11001310305620260005200&SoloActivos=false&pagina=1').then(r=>console.log(r.status))"`
+   debe imprimir `200`. Si falla, el servidor no alcanza a la Rama Judicial (algunos sitios del
+   Estado bloquean direcciones de fuera de Colombia) y hay que cambiar de región o proveedor.
+2. Registra un trámite real y llama `POST /v1/tramites/:id/revisar`: debe traer sus actuaciones.
+3. Con el buzón configurado, envía un correo de prueba y revisa los registros del servicio.
+4. Con `ANTHROPIC_API_KEY`, la siguiente actuación nueva debe llegar con `resumen`.
 
 ### Prueba en vivo de la Rama Judicial
 
