@@ -16,6 +16,9 @@ export class Tramite {
   @Column({ type: 'text', nullable: true }) sujetos!: string | null;
   @Column({ name: 'fecha_radicacion', type: 'date', nullable: true }) fechaRadicacion!: string | null;
   @Column({ name: 'ultima_actuacion_fecha', type: 'date', nullable: true }) ultimaActuacionFecha!: string | null;
+  /** Estado tal como lo muestra el portal de la entidad (tramites con inicio de sesion). */
+  @Column({ name: 'estado_fuente', type: 'text', nullable: true }) estadoFuente!: string | null;
+  @Column({ name: 'estado_fuente_desde', type: 'timestamptz', nullable: true }) estadoFuenteDesde!: Date | null;
   @Column({ name: 'ultima_revision_at', type: 'timestamptz', nullable: true }) ultimaRevisionAt!: Date | null;
   @Column({ name: 'sincronizado_at', type: 'timestamptz', nullable: true }) sincronizadoAt!: Date | null;
   @Column({ name: 'proxima_revision_at', type: 'timestamptz' }) proximaRevisionAt!: Date;

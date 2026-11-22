@@ -5,10 +5,12 @@ import { AddressInfo } from 'node:net';
 import request from 'supertest';
 import { DataSource } from 'typeorm';
 import { AppModule } from '../src/app.module';
+import { BovedaService, CredencialPortal } from '../src/boveda/boveda.service';
 import { ENV, Env } from '../src/config/env';
 import { BuzonService } from '../src/correo/buzon.service';
 import { CorreoLeido, LectorBuzon, LecturaBuzon } from '../src/correo/lector-buzon';
 import { ActuacionFuente, Fuente, FuenteError, ProcesoFuente } from '../src/fuentes/fuente';
+import { EstadoPortal, FuentePortal, PORTALES, PortalError } from '../src/fuentes/fuente-portal';
 import { RamaJudicialFuente } from '../src/fuentes/rama-judicial.fuente';
 import { MonitorService } from '../src/monitor/monitor.service';
 import { Planificador } from '../src/monitor/planificador';
@@ -45,6 +47,19 @@ class ResumidorFalso extends Resumidor {
     this.pedidos.push(entrada);
     if (entrada.titulo === 'Traslado') return null;
     return { resumen: `Resumen de ${entrada.titulo}`, queSignifica: 'x', accionSugerida: 'y', urgencia: 'MEDIA' };
+  }
+}
+
+class PortalFalso extends FuentePortal {
+  readonly id = 'MEN_PORTAL' as const;
+  estado: EstadoPortal = { estado: 'Radicado', detalle: null };
+  fallo: PortalError | null = null;
+  recibidas: Array<CredencialPortal & { radicado: string }> = [];
+
+  async consultarEstado(credencial: CredencialPortal, radicado: string): Promise<EstadoPortal> {
+    this.recibidas.push({ ...credencial, radicado });
+    if (this.fallo) throw this.fallo;
+    return this.estado;
   }
 }
 
@@ -85,6 +100,7 @@ describe('Radika API', () => {
   const fuente = new FuenteFalsa();
   const resumidor = new ResumidorFalso();
   const lector = new LectorFalso();
+  const portal = new PortalFalso();
   const recibidos: Array<{ cuerpo: string; firma: string; marca: string }> = [];
   let estadoCrm = 200;
 
@@ -112,6 +128,7 @@ describe('Radika API', () => {
       CRM_WEBHOOK_SECRET: SECRETO,
       SCHEDULER_ENABLED: 'false',
       ANTHROPIC_API_KEY: '',
+      CREDENCIALES_LLAVE: Buffer.alloc(32, 7).toString('base64'),
       REVISION_LOTE: '10',
     });
     const modulo = await Test.createTestingModule({ imports: [AppModule] })
@@ -121,6 +138,8 @@ describe('Radika API', () => {
       .useValue(resumidor)
       .overrideProvider(LectorBuzon)
       .useValue(lector)
+      .overrideProvider(PORTALES)
+      .useValue([portal])
       .compile();
     app = modulo.createNestApplication();
     await app.init();
@@ -128,7 +147,10 @@ describe('Radika API', () => {
   });
 
   beforeEach(async () => {
-    await datos.query('TRUNCATE eventos, actuaciones, tramites, buzones, correos_pendientes');
+    await datos.query('TRUNCATE eventos, actuaciones, tramites, buzones, correos_pendientes, credenciales, accesos_portal');
+    portal.estado = { estado: 'Radicado', detalle: null };
+    portal.fallo = null;
+    portal.recibidas = [];
     lector.buzon = 'asesor@empresa.test';
     lector.uidValidity = '1';
     lector.correos = [];
@@ -304,7 +326,7 @@ describe('Radika API', () => {
     const eventos = await datos.query('SELECT tipo FROM eventos ORDER BY created_at');
     expect(eventos).toEqual([{ tipo: 'TERMINO_POR_VENCER' }, { tipo: 'TERMINO_VENCIDO' }]);
 
-    await datos.query('TRUNCATE eventos, actuaciones, tramites');
+    await datos.query('TRUNCATE eventos, actuaciones, tramites CASCADE');
     expect(await monitor.avisarTerminos(limite)).toBe(0);
   });
 
@@ -510,6 +532,64 @@ describe('Radika API', () => {
 
     lector.buzon = null;
     expect(await buzon.sincronizar()).toEqual({ leidos: 0, vinculados: 0, pendientes: 0 });
+  });
+
+  test('guarda la credencial cifrada, nunca la devuelve y revisa el portal del Ministerio', async () => {
+    const crear = (tipo: string, radicado: string) => conLlave(api().post('/v1/tramites')).send({ tipo, radicado, referenciaCrm: 'E4MXO9T4' });
+    const convalidacion = (await crear('CONVALIDACION_MEN', '2026-ER-100200')).body.data;
+    const credencial = { usuario: 'cliente.ejemplo', clave: 'Cl4ve-Secreta!' };
+    const ruta = `/v1/tramites/${convalidacion.id}`;
+
+    await conLlave(api().put(`/v1/tramites/${(await crearTutela()).id}/credencial`)).send(credencial).expect(400);
+    await conLlave(api().put(`${ruta}/credencial`)).send({ usuario: 'x' }).expect(400);
+    await conLlave(api().put(`${ruta}/credencial`)).send(credencial).expect(200, { success: true, data: { credencialConfigurada: true }, error: null });
+
+    const detalle = await conLlave(api().get(ruta)).expect(200);
+    expect(detalle.body.data).toMatchObject({ credencialConfigurada: true, tramite: { fuente: 'MEN_PORTAL' } });
+    expect(JSON.stringify(detalle.body)).not.toContain('Secreta');
+    const [fila] = await datos.query('SELECT usuario, clave FROM credenciales');
+    expect(fila.usuario).toMatch(/^v1:/);
+    expect(JSON.stringify(fila)).not.toMatch(/cliente\.ejemplo|Secreta/);
+
+    const monitor = app.get(MonitorService);
+    // Se revisan los dos tramites pendientes: la tutela de arriba y la convalidacion.
+    expect(await monitor.revisarPendientes()).toBe(2);
+    expect(portal.recibidas).toEqual([{ ...credencial, radicado: '2026-ER-100200' }]);
+    expect((await conLlave(api().get(ruta))).body.data.tramite).toMatchObject({ estadoFuente: 'Radicado', ultimoError: null });
+    expect(await monitor.revisar(convalidacion.id)).toMatchObject({ encontrado: true, actuacionesNuevas: 0 });
+
+    portal.estado = { estado: 'Requerimiento de documentos', detalle: 'Falta el acta de grado apostillada' };
+    expect(await monitor.revisar(convalidacion.id)).toMatchObject({ actuacionesNuevas: 1, primeraSincronizacion: false });
+    const eventos = await datos.query(`SELECT tipo, payload->'datos' AS datos FROM eventos ORDER BY created_at`);
+    expect(eventos.map((evento: { tipo: string }) => evento.tipo)).toEqual(['TRAMITE_SINCRONIZADO', 'ACTUACION_NUEVA']);
+    expect(eventos[1].datos).toMatchObject({
+      origen: 'PORTAL',
+      actuacion: { titulo: 'Cambio de estado: Requerimiento de documentos', categoria: 'REQUERIMIENTO', anotacion: 'Antes: Radicado. Falta el acta de grado apostillada' },
+    });
+
+    portal.fallo = new PortalError('El portal rechazo el usuario o la clave', 'CREDENCIAL_INVALIDA');
+    expect(await monitor.revisar(convalidacion.id)).toMatchObject({ encontrado: false, error: expect.stringContaining('rechazo') });
+    expect((await datos.query(`SELECT count(*)::int AS n FROM eventos WHERE tipo = 'ERROR_FUENTE'`))[0].n).toBe(1);
+    portal.fallo = new PortalError('El portal no responde', 'NO_DISPONIBLE');
+    await monitor.revisar(convalidacion.id);
+    portal.fallo = null;
+    const mal = jest.spyOn(portal, 'consultarEstado').mockRejectedValueOnce(new Error('inesperado'));
+    await expect(monitor.revisar(convalidacion.id)).rejects.toThrow('inesperado');
+    mal.mockRestore();
+
+    const accesos = (await conLlave(api().get(`${ruta}/accesos`)).expect(200)).body.data;
+    expect(accesos.map((acceso: { resultado: string }) => acceso.resultado)).toEqual(['NO_DISPONIBLE', 'CREDENCIAL_INVALIDA', 'OK', 'OK', 'OK']);
+
+    await conLlave(api().delete(`${ruta}/credencial`)).expect(200, { success: true, data: { eliminada: true }, error: null });
+    await conLlave(api().delete(`${ruta}/credencial`)).expect(200, { success: true, data: { eliminada: false }, error: null });
+    expect(await monitor.revisar(convalidacion.id)).toMatchObject({ error: expect.stringContaining('Falta registrar') });
+
+    await crear('TUTELA', '11001310300120260012399').send({ tipo: 'TUTELA', radicado: '11001310300120260012399', fuente: 'MEN_PORTAL' }).expect(400);
+    const env = app.get<Env>(ENV);
+    const repositorios = [datos.getRepository('Credencial'), datos.getRepository('AccesoPortal')] as const;
+    const sinLlave = new BovedaService(repositorios[0] as never, repositorios[1] as never, { ...env, CREDENCIALES_LLAVE: undefined });
+    await expect(sinLlave.guardar(convalidacion.id, credencial)).rejects.toThrow(/no esta configurada/);
+    expect(() => new BovedaService(repositorios[0] as never, repositorios[1] as never, { ...env, CREDENCIALES_LLAVE: Buffer.alloc(40, 1).toString('base64') })).toThrow(/32 bytes/);
   });
 
   test('un cuerpo mal formado responde 400 y no 500', async () => {

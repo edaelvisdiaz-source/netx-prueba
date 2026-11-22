@@ -1,5 +1,5 @@
 import {
-  Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Query,
+  Body, Controller, Delete, Get, HttpCode, HttpStatus, Param, ParseUUIDPipe, Patch, Post, Put, Query,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { SkipThrottle, Throttle } from '@nestjs/throttler';
@@ -7,16 +7,18 @@ import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { Publico } from '../auth/api-key.guard';
 import { ok, validar } from '../common/respuesta';
+import { BovedaService } from '../boveda/boveda.service';
 import { BuzonService } from '../correo/buzon.service';
 import { MonitorService } from '../monitor/monitor.service';
 import { EventosService } from '../notificaciones/eventos.service';
 import {
   actualizarTramiteSchema, crearTramiteSchema, listarEventosSchema, listarTramitesSchema,
-  correoEntranteSchema, registrarActuacionSchema,
+  correoEntranteSchema, credencialSchema, registrarActuacionSchema,
 } from './dto';
 import { TramitesService } from './tramites.service';
 
 const REVISIONES_MANUALES_POR_MINUTO = 10;
+const CAMBIOS_DE_CREDENCIAL_POR_MINUTO = 30;
 const VENTANA_MS = 60_000;
 
 @Controller()
@@ -27,6 +29,7 @@ export class TramitesController {
     private readonly eventos: EventosService,
     private readonly buzon: BuzonService,
     @InjectDataSource() private readonly datos: DataSource,
+    private readonly boveda: BovedaService,
   ) {}
 
   @Publico()
@@ -55,7 +58,7 @@ export class TramitesController {
 
   @Get('v1/tramites/:id')
   async detalle(@Param('id', ParseUUIDPipe) id: string) {
-    return ok(await this.tramites.detalle(id));
+    return ok({ ...(await this.tramites.detalle(id)), credencialConfigurada: await this.boveda.existe(id) });
   }
 
   @Patch('v1/tramites/:id')
@@ -75,6 +78,30 @@ export class TramitesController {
   @HttpCode(HttpStatus.OK)
   async revisar(@Param('id', ParseUUIDPipe) id: string) {
     return ok(await this.monitor.revisar(id));
+  }
+
+  /** Guarda (o reemplaza) el usuario y la clave del portal. Nunca se devuelven. */
+  @Put('v1/tramites/:id/credencial')
+  @Throttle({ default: { limit: CAMBIOS_DE_CREDENCIAL_POR_MINUTO, ttl: VENTANA_MS } })
+  async guardarCredencial(@Param('id', ParseUUIDPipe) id: string, @Body() cuerpo: unknown) {
+    const credencial = validar(credencialSchema, cuerpo);
+    await this.tramites.activarPortal(id);
+    await this.boveda.guardar(id, credencial);
+    return ok({ credencialConfigurada: true });
+  }
+
+  @Delete('v1/tramites/:id/credencial')
+  @HttpCode(HttpStatus.OK)
+  async eliminarCredencial(@Param('id', ParseUUIDPipe) id: string) {
+    await this.tramites.obtener(id);
+    return ok({ eliminada: await this.boveda.eliminar(id) });
+  }
+
+  /** Bitacora de las veces que Radika entro al portal con la credencial de este tramite. */
+  @Get('v1/tramites/:id/accesos')
+  async accesos(@Param('id', ParseUUIDPipe) id: string) {
+    await this.tramites.obtener(id);
+    return ok(await this.boveda.listarAccesos(id));
   }
 
   @Post('v1/tramites/:id/actuaciones')

@@ -10,7 +10,7 @@ novedades y las entrega al CRM para que actualice la pestaña de Seguimiento.
 |---|---|---|
 | 1 | Tutelas y procesos judiciales (Rama Judicial), términos de tutela, avisos al CRM | Construida; formato de la Rama Judicial comprobado con una tutela real |
 | 2 | Resumen de cada actuación con IA | Construida; falta probarla con una llave real de la API |
-| 3 | Ministerio de Educación: convalidaciones y legalizaciones (con usuario del cliente) | Pendiente |
+| 3 | Ministerio de Educación: convalidaciones y legalizaciones (con usuario del cliente) | Bóveda de credenciales y motor de revisión construidos; falta el lector de la pantalla del portal |
 | 4 | Cancillería (apostillas) y SAC | Pendiente |
 
 Los trámites de las fases 3 y 4 ya se pueden registrar: quedan con fuente `MANUAL` y sin
@@ -107,6 +107,9 @@ siempre el mismo sobre:
 | `PATCH /v1/tramites/:id` | Cambia `estado` (`ACTIVO`, `PAUSADO`, `CERRADO`), `referenciaCrm` o `clienteNombre` |
 | `DELETE /v1/tramites/:id` | Elimina el trámite y su historial |
 | `POST /v1/tramites/:id/revisar` | Revisa ahora mismo, sin esperar el turno |
+| `PUT /v1/tramites/:id/credencial` | Guarda o reemplaza el usuario y la clave del portal (`usuario`, `clave`) |
+| `DELETE /v1/tramites/:id/credencial` | Borra la credencial |
+| `GET /v1/tramites/:id/accesos` | Bitácora de ingresos de Radika al portal con esa credencial |
 | `POST /v1/tramites/:id/actuaciones` | Registra una actuación revisada a mano (`fecha`, `titulo`, `anotacion`) |
 | `POST /v1/correos` | Recibe un correo de un despacho y lo enlaza con su trámite |
 | `GET /v1/correos/pendientes` | Correos de juzgados sin trámite asociado |
@@ -233,6 +236,25 @@ minutos y hace esto mismo sola:
 
 La lógica del lector está probada con un buzón simulado; la conexión IMAP real se comprueba
 al desplegar, con el buzón de verdad.
+
+## Portales con usuario y clave
+
+Para los trámites del Ministerio de Educación, el radicador escribe en el CRM el usuario y la
+clave del cliente, y el CRM los envía con `PUT /v1/tramites/:id/credencial`.
+
+- Se guardan cifrados (AES-256-GCM) con `CREDENCIALES_LLAVE`, que vive fuera de la base de
+  datos. Una copia de la base no sirve para leerlos.
+- Ninguna ruta los devuelve. El detalle del trámite solo dice `credencialConfigurada: true`.
+- Al guardarla, el trámite pasa a la fuente `MEN_PORTAL` y Radika lo revisa una vez al día.
+- La primera lectura produce `TRAMITE_SINCRONIZADO` con el estado. Cada cambio de estado se
+  registra como actuación ("Cambio de estado: …") y sale como `ACTUACION_NUEVA` con
+  `"origen": "PORTAL"`. El estado vigente queda en `tramite.estadoFuente`.
+- Si el portal rechaza la clave, Radika avisa de inmediato con `ERROR_FUENTE` y no vuelve a
+  intentar hasta el día siguiente, para no bloquear la cuenta del cliente.
+- Cada ingreso queda en la bitácora (`GET /v1/tramites/:id/accesos`).
+
+El lector que entra al portal y lee la pantalla de estado todavía no existe: mientras no esté
+instalado, estos trámites no se revisan solos y siguen por revisión asistida.
 
 ## Revisión asistida
 

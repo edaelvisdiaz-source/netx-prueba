@@ -5,13 +5,17 @@ import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { FiltroErrores } from './common/respuesta';
+import { BovedaService } from './boveda/boveda.service';
+import { AccesoPortal, Credencial } from './boveda/credencial.entity';
 import { cargarEnv, ENV, Env } from './config/env';
 import { Buzon, CorreoPendiente } from './correo/buzon.entity';
 import { BuzonService } from './correo/buzon.service';
 import { ImapLectorBuzon } from './correo/imap.lector-buzon';
 import { LectorBuzon } from './correo/lector-buzon';
 import { Buzon1700000000001 } from './migrations/1700000000001-buzon';
+import { PORTALES } from './fuentes/fuente-portal';
 import { FuentesRegistry } from './fuentes/fuentes.registry';
+import { Portales1700000000002 } from './migrations/1700000000002-portales';
 import { HTTP_FETCH, RamaJudicialFuente } from './fuentes/rama-judicial.fuente';
 import { Inicial1700000000000 } from './migrations/1700000000000-inicial';
 import { MonitorService } from './monitor/monitor.service';
@@ -27,7 +31,7 @@ import { TramitesService } from './tramites/tramites.service';
 
 const PETICIONES_POR_MINUTO = 120;
 const VENTANA_MS = 60_000;
-const ENTIDADES = [Tramite, Actuacion, Evento, Buzon, CorreoPendiente];
+const ENTIDADES = [Tramite, Actuacion, Evento, Buzon, CorreoPendiente, Credencial, AccesoPortal];
 
 @Module({
   providers: [{ provide: ENV, useFactory: () => cargarEnv() }],
@@ -45,7 +49,7 @@ class ConfigModule {}
         type: 'postgres' as const,
         url: env.DATABASE_URL,
         entities: ENTIDADES,
-        migrations: [Inicial1700000000000, Buzon1700000000001],
+        migrations: [Inicial1700000000000, Buzon1700000000001, Portales1700000000002],
         migrationsRun: true,
         synchronize: false,
       }),
@@ -62,6 +66,9 @@ class ConfigModule {}
     { provide: APP_GUARD, useClass: ApiKeyGuard },
     { provide: CLIENTE_ANTHROPIC, inject: [ENV], useFactory: crearClienteAnthropic },
     { provide: Resumidor, useClass: ClaudeResumidor },
+    // Los lectores de portales con inicio de sesion se agregan a esta lista cuando existan.
+    { provide: PORTALES, useValue: [] },
+    BovedaService,
     RamaJudicialFuente,
     FuentesRegistry,
     TramitesService,

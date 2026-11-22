@@ -1,8 +1,10 @@
 import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, IsNull, Not, Repository } from 'typeorm';
+import { BovedaService } from '../boveda/boveda.service';
 import { ENV, Env } from '../config/env';
 import { ActuacionFuente, FuenteError } from '../fuentes/fuente';
+import { FuentePortal, PortalError } from '../fuentes/fuente-portal';
 import { FuentesRegistry } from '../fuentes/fuentes.registry';
 import { EventosService } from '../notificaciones/eventos.service';
 import { ResumenActuacion, Resumidor } from '../resumen/resumidor';
@@ -25,6 +27,7 @@ const VARIACION_INTERVALO = 0.1;
 const LARGO_MAXIMO_NOTA = 400;
 const MAX_PROCESOS_POR_RADICADO = 20;
 const LARGO_MAXIMO_ANOTACION = 2000;
+const LARGO_MAXIMO_TITULO = 200;
 
 type ActuacionEncontrada = ActuacionFuente & { readonly despacho: string | null };
 
@@ -72,6 +75,7 @@ export class MonitorService {
     private readonly fuentes: FuentesRegistry,
     private readonly eventos: EventosService,
     private readonly resumidor: Resumidor,
+    private readonly boveda: BovedaService,
   ) {}
 
   /** Consulta la fuente, guarda las actuaciones que no estaban y deja los avisos para el CRM. */
@@ -82,6 +86,7 @@ export class MonitorService {
     }
     const fuente = this.fuentes.obtener(tramite.fuente);
     const primera = tramite.sincronizadoAt === null;
+    if (fuente instanceof FuentePortal) return this.revisarPortal(tramite, fuente, primera);
     try {
       const todos = await fuente.buscarProcesos(tramite.radicado);
       const procesos = todos.filter((proceso) => !proceso.privado).slice(0, MAX_PROCESOS_POR_RADICADO);
@@ -192,7 +197,7 @@ export class MonitorService {
     return 'SIN_TRAMITE';
   }
 
-  private async registrarExterna(tramite: Tramite, origen: 'MANUAL' | 'CORREO', encontrada: ActuacionEncontrada): Promise<Actuacion> {
+  private async registrarExterna(tramite: Tramite, origen: 'MANUAL' | 'CORREO' | 'PORTAL', encontrada: ActuacionEncontrada): Promise<Actuacion> {
     const tramiteId = tramite.id;
     const existentes = await this.actuaciones.find({
       where: { tramiteId },
@@ -243,10 +248,10 @@ export class MonitorService {
       `UPDATE tramites SET proxima_revision_at = now() + make_interval(mins => $2)
        WHERE id IN (
          SELECT id FROM tramites
-         WHERE estado = 'ACTIVO' AND fuente <> 'MANUAL' AND proxima_revision_at <= now()
+         WHERE estado = 'ACTIVO' AND fuente = ANY($3) AND proxima_revision_at <= now()
          ORDER BY proxima_revision_at LIMIT $1 FOR UPDATE SKIP LOCKED
        ) RETURNING id`,
-      [this.env.REVISION_LOTE, RESERVA_MINUTOS],
+      [this.env.REVISION_LOTE, RESERVA_MINUTOS, this.fuentes.disponibles()],
     );
     const reservados = (Array.isArray(filas) && Array.isArray(filas[0]) ? filas[0] : filas) as Array<{ id: string }>;
     for (const { id } of reservados) {
@@ -290,6 +295,76 @@ export class MonitorService {
       }
     }
     return avisos;
+  }
+
+  /** Entra al portal con la credencial del cliente, lee el estado y registra el cambio si lo hubo. */
+  private async revisarPortal(tramite: Tramite, portal: FuentePortal, primera: boolean): Promise<ResultadoRevision> {
+    const base = { tramiteId: tramite.id, primeraSincronizacion: primera };
+    const proxima = new Date(Date.now() + this.env.PORTAL_INTERVALO_HORAS * MS_HORA * (1 + (Math.random() * 2 - 1) * VARIACION_INTERVALO));
+    const credencial = await this.boveda.leer(tramite.id);
+    if (!credencial) {
+      const mensaje = 'Falta registrar el usuario y la clave del portal';
+      await this.tramites.update({ id: tramite.id }, { ultimaRevisionAt: new Date(), proximaRevisionAt: proxima, ultimoError: mensaje });
+      return { ...base, encontrado: false, actuacionesNuevas: 0, error: mensaje };
+    }
+    try {
+      const lectura = await portal.consultarEstado(credencial, tramite.radicado);
+      await this.boveda.anotarAcceso(tramite.id, portal.id, 'OK');
+      const cambio = lectura.estado !== tramite.estadoFuente;
+      await this.tramites.update(
+        { id: tramite.id },
+        {
+          ultimaRevisionAt: new Date(),
+          sincronizadoAt: tramite.sincronizadoAt ?? new Date(),
+          proximaRevisionAt: proxima,
+          ultimoError: null,
+          erroresConsecutivos: 0,
+          ...(cambio ? { estadoFuente: lectura.estado, estadoFuenteDesde: new Date() } : {}),
+        },
+      );
+      if (primera) {
+        await this.eventos.registrar(this.dataSource.manager, {
+          tramite,
+          tipo: 'TRAMITE_SINCRONIZADO',
+          claveDedupe: `sincronizado:${tramite.id}`,
+          datos: { estado: lectura.estado, detalle: lectura.detalle },
+        });
+      } else if (cambio) {
+        await this.registrarExterna(tramite, 'PORTAL', {
+          clave: `portal:${randomUUID()}`,
+          fecha: hoyEnColombia(),
+          titulo: `Cambio de estado: ${lectura.estado}`.slice(0, LARGO_MAXIMO_TITULO),
+          anotacion: [`Antes: ${tramite.estadoFuente ?? 'sin estado'}.`, lectura.detalle].filter(Boolean).join(' ').slice(0, LARGO_MAXIMO_ANOTACION),
+          fechaInicioTermino: null,
+          fechaFinTermino: null,
+          fechaRegistro: hoyEnColombia(),
+          despacho: null,
+        });
+      }
+      return { ...base, encontrado: true, actuacionesNuevas: !primera && cambio ? 1 : 0, error: null };
+    } catch (error) {
+      if (!(error instanceof PortalError)) throw error;
+      await this.boveda.anotarAcceso(tramite.id, portal.id, error.codigo);
+      const errores = tramite.erroresConsecutivos + 1;
+      // Una clave rechazada no se reintenta pronto: varios intentos fallidos pueden bloquear la cuenta del cliente.
+      const avisar = error.codigo === 'CREDENCIAL_INVALIDA' || errores === ERRORES_PARA_AVISAR;
+      await this.dataSource.transaction(async (em) => {
+        await em.update(
+          Tramite,
+          { id: tramite.id },
+          { ultimaRevisionAt: new Date(), proximaRevisionAt: proxima, ultimoError: error.message, erroresConsecutivos: errores },
+        );
+        if (avisar) {
+          await this.eventos.registrar(em, {
+            tramite,
+            tipo: 'ERROR_FUENTE',
+            claveDedupe: `error:${tramite.id}:${hoyEnColombia()}`,
+            datos: { mensaje: error.message, codigo: error.codigo, erroresConsecutivos: errores },
+          });
+        }
+      });
+      return { ...base, encontrado: false, actuacionesNuevas: 0, error: error.message };
+    }
   }
 
   private async guardar(

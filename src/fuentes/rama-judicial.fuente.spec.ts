@@ -100,8 +100,9 @@ describe('fuente Rama Judicial', () => {
 
   test('el registro entrega la fuente o avisa que no existe', () => {
     const { fuente } = fuenteCon({});
-    const registro = new FuentesRegistry(fuente);
+    const registro = new FuentesRegistry(fuente, []);
     expect(registro.obtener('RAMA_JUDICIAL_CPNU')).toBe(fuente);
     expect(() => registro.obtener('MANUAL')).toThrow(/no tiene consulta automatica/);
+    expect(registro.disponibles()).toEqual(['RAMA_JUDICIAL_CPNU']);
   });
 });

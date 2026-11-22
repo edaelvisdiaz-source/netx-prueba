@@ -7,7 +7,7 @@ import { Actuacion } from './actuacion.entity';
 import { ActualizarTramite, CrearTramite, ListarTramites } from './dto';
 import { EnlaceConsulta, enlacesDeConsulta } from './enlaces';
 import { normalizarRadicadoJudicial, normalizarRadicadoLibre } from './radicado';
-import { esTipoJudicial, fuentePorDefecto } from './tipos';
+import { esTipoJudicial, esTipoMen, fuentePorDefecto } from './tipos';
 import { Tramite } from './tramite.entity';
 
 const PG_VIOLACION_UNICA = '23505';
@@ -31,6 +31,9 @@ export class TramitesService {
     const esJudicial = fuente === 'RAMA_JUDICIAL_CPNU';
     if (esJudicial && !esTipoJudicial(datos.tipo)) {
       throw new BadRequestException('La Rama Judicial solo aplica a tutelas y procesos judiciales');
+    }
+    if (fuente === 'MEN_PORTAL' && !esTipoMen(datos.tipo)) {
+      throw new BadRequestException('El portal del Ministerio solo aplica a convalidaciones, legalizaciones y SAC');
     }
     const radicado = esJudicial
       ? normalizarRadicadoJudicial(datos.radicado)
@@ -98,6 +101,15 @@ export class TramitesService {
     const reactivado = cambios.estado === 'ACTIVO' && actual.estado !== 'ACTIVO';
     await this.tramites.update({ id }, { ...cambios, ...(reactivado ? { proximaRevisionAt: new Date() } : {}) });
     return this.obtener(id);
+  }
+
+  /** Al registrar la credencial, un tramite del Ministerio pasa a revisarse solo en su portal. */
+  async activarPortal(id: string): Promise<void> {
+    const tramite = await this.obtener(id);
+    if (!esTipoMen(tramite.tipo)) {
+      throw new BadRequestException('Este tipo de tramite no se consulta con usuario y clave');
+    }
+    await this.tramites.update({ id }, { fuente: 'MEN_PORTAL', proximaRevisionAt: new Date() });
   }
 
   async eliminar(id: string): Promise<void> {

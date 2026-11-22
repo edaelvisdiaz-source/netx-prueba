@@ -64,6 +64,10 @@ export const correoEntranteSchema = z
   .strict();
 export type CorreoEntrante = z.infer<typeof correoEntranteSchema>;
 
+export const credencialSchema = z
+  .object({ usuario: z.string().min(1).max(200), clave: z.string().min(1).max(200) })
+  .strict();
+
 export const listarEventosSchema = z
   .object({
     cursor: z

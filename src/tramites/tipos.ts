@@ -3,7 +3,7 @@ export const TIPOS_TRAMITE = [
 ] as const;
 export type TipoTramite = (typeof TIPOS_TRAMITE)[number];
 
-export const FUENTES = ['RAMA_JUDICIAL_CPNU', 'MANUAL'] as const;
+export const FUENTES = ['RAMA_JUDICIAL_CPNU', 'MANUAL', 'MEN_PORTAL'] as const;
 export type FuenteId = (typeof FUENTES)[number];
 
 export const ESTADOS_TRAMITE = ['ACTIVO', 'PAUSADO', 'CERRADO'] as const;
@@ -18,6 +18,12 @@ const TIPOS_JUDICIALES: ReadonlySet<TipoTramite> = new Set(['TUTELA', 'PROCESO_J
 
 export function esTipoJudicial(tipo: TipoTramite): boolean {
   return TIPOS_JUDICIALES.has(tipo);
+}
+
+const TIPOS_MEN: ReadonlySet<TipoTramite> = new Set(['CONVALIDACION_MEN', 'LEGALIZACION_MEN', 'SAC_MEN']);
+
+export function esTipoMen(tipo: TipoTramite): boolean {
+  return TIPOS_MEN.has(tipo);
 }
 
 /** Fuente automatica disponible hoy para cada tipo. Los demas quedan en seguimiento manual. */
