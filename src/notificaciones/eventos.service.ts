@@ -80,6 +80,11 @@ export class EventosService {
     return { items, siguiente: ultimo ? `${ultimo.createdAt.toISOString()}_${ultimo.id}` : null };
   }
 
+  /** Ultimas novedades, de la mas reciente a la mas antigua, para mostrarlas en pantalla. */
+  recientes(limite: number): Promise<Evento[]> {
+    return this.eventos.find({ order: { createdAt: 'DESC' }, take: limite });
+  }
+
   /** Entrega al CRM los eventos pendientes. Devuelve cuantos quedaron entregados. */
   async entregarPendientes(): Promise<number> {
     if (!this.env.CRM_WEBHOOK_URL || !this.env.CRM_WEBHOOK_SECRET) return 0;

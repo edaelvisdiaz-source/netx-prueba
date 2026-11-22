@@ -18,6 +18,7 @@ import {
 import { TramitesService } from './tramites.service';
 
 const REVISIONES_MANUALES_POR_MINUTO = 10;
+const NOVEDADES_EN_PANTALLA = 100;
 const CAMBIOS_DE_CREDENCIAL_POR_MINUTO = 30;
 const VENTANA_MS = 60_000;
 
@@ -140,6 +141,11 @@ export class TramitesController {
     const { cursor, limit } = validar(listarEventosSchema, consulta);
     const { items, siguiente } = await this.eventos.listar(cursor, limit);
     return ok({ eventos: items, siguiente });
+  }
+
+  @Get('v1/novedades')
+  async novedades() {
+    return ok(await this.eventos.recientes(NOVEDADES_EN_PANTALLA));
   }
 
   /** Vuelve a poner en cola los avisos que agotaron sus intentos (por ejemplo tras una caida larga del CRM). */

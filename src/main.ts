@@ -2,6 +2,8 @@ import 'reflect-metadata';
 import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import type { NextFunction, Request, Response } from 'express';
+import { join } from 'node:path';
 import { AppModule } from './app.module';
 import { ENV, Env } from './config/env';
 
@@ -11,6 +13,15 @@ async function arrancar(): Promise<void> {
   const env = app.get<Env>(ENV);
   app.disable('x-powered-by');
   app.set('trust proxy', env.TRUST_PROXY_HOPS);
+  // Las pantallas no cargan nada de otros sitios ni se pueden incrustar en otra pagina.
+  app.use((_peticion: Request, respuesta: Response, siguiente: NextFunction) => {
+    respuesta.setHeader('Content-Security-Policy', "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    respuesta.setHeader('X-Content-Type-Options', 'nosniff');
+    respuesta.setHeader('Referrer-Policy', 'no-referrer');
+    if (env.NODE_ENV === 'production') respuesta.setHeader('Strict-Transport-Security', 'max-age=31536000');
+    siguiente();
+  });
+  app.useStaticAssets(join(__dirname, '..', 'public'), { index: 'index.html', maxAge: '5m' });
   await app.listen(env.PORT);
   new Logger('Radika').log(`API escuchando en el puerto ${env.PORT}`);
 }
