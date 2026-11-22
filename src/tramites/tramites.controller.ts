@@ -8,7 +8,7 @@ import { MonitorService } from '../monitor/monitor.service';
 import { EventosService } from '../notificaciones/eventos.service';
 import {
   actualizarTramiteSchema, crearTramiteSchema, listarEventosSchema, listarTramitesSchema,
-  registrarActuacionSchema,
+  correoEntranteSchema, registrarActuacionSchema,
 } from './dto';
 import { TramitesService } from './tramites.service';
 
@@ -69,6 +69,13 @@ export class TramitesController {
   @Post('v1/tramites/:id/actuaciones')
   async registrarActuacion(@Param('id', ParseUUIDPipe) id: string, @Body() cuerpo: unknown) {
     return ok(await this.monitor.registrarManual(id, validar(registrarActuacionSchema, cuerpo)));
+  }
+
+  /** Recibe un correo de un despacho (lo envia el lector del buzon) y lo enlaza con su tramite. */
+  @Post('v1/correos')
+  @HttpCode(HttpStatus.OK)
+  async recibirCorreo(@Body() cuerpo: unknown) {
+    return ok(await this.monitor.registrarCorreo(validar(correoEntranteSchema, cuerpo)));
   }
 
   @Get('v1/eventos')

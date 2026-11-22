@@ -30,6 +30,11 @@ const esquema = z
     /** Opcional. Sin llave, Radika funciona igual pero no redacta resumenes. */
     ANTHROPIC_API_KEY: z.string().min(20).optional().or(z.literal('').transform(() => undefined)),
     RESUMEN_IA_MODELO: z.string().min(3).default('claude-opus-5-5'),
+    /** Dominios desde los que se aceptan correos de despachos (incluye sus subdominios). */
+    CORREO_DOMINIOS_CONFIABLES: z
+      .string()
+      .default('ramajudicial.gov.co,consejodeestado.gov.co,corteconstitucional.gov.co')
+      .transform((valor) => valor.split(',').map((dominio) => dominio.trim().toLowerCase()).filter(Boolean)),
     RESUMENES_POR_REVISION: z.coerce.number().int().min(0).max(50).default(10),
   })
   .superRefine((env, contexto) => {

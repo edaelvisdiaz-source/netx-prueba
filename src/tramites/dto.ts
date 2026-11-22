@@ -48,6 +48,22 @@ export const registrarActuacionSchema = z
   .strict();
 export type RegistrarActuacion = z.infer<typeof registrarActuacionSchema>;
 
+const MAX_ADJUNTOS = 30;
+
+export const correoEntranteSchema = z
+  .object({
+    messageId: z.string().trim().min(3).max(300),
+    from: z.string().trim().email().max(320),
+    fromNombre: z.string().trim().max(200).optional(),
+    subject: z.string().max(500),
+    date: z.string().datetime({ offset: true }),
+    adjuntos: z.array(z.string().trim().min(1).max(200)).max(MAX_ADJUNTOS).optional(),
+    /** Texto del correo. Solo se usa para buscar el radicado; no se guarda. */
+    texto: z.string().max(50_000).optional(),
+  })
+  .strict();
+export type CorreoEntrante = z.infer<typeof correoEntranteSchema>;
+
 export const listarEventosSchema = z
   .object({
     cursor: z

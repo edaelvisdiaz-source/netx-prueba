@@ -401,6 +401,52 @@ describe('Radika API', () => {
     expect((await conLlave(api().get(`/v1/tramites/${civil.id}`))).body.data.enlacesConsulta).toHaveLength(1);
   });
 
+  test('convierte los correos de los juzgados en actuaciones del tramite correcto', async () => {
+    const correo = (asunto: string, extra: Record<string, unknown> = {}) =>
+      conLlave(api().post('/v1/correos')).send({
+        messageId: `<${asunto.length}-${Object.keys(extra).length}@exchangelabs.com>`,
+        from: 'j17pccbt@cendoj.ramajudicial.gov.co',
+        fromNombre: 'Juzgado 17 Penal Circuito Conocimiento - Bogotá',
+        subject: asunto,
+        date: '2026-11-11T21:54:06Z',
+        ...extra,
+      });
+    const penal = await crearTutela('11001310901720260979500');
+    const familia = await crearTutela('11001311002020260077500');
+
+    const fallo = await correo('NOTIFICA FALLO TUTELA 110013109017-2026 - 9795 Accionante: PERSONA DE EJEMPLO', {
+      adjuntos: ['10. Fallo de tutela 9795. Hecho superado.pdf'],
+    }).expect(200);
+    expect(fallo.body.data).toEqual({ vinculado: true, tramiteId: penal.id, duplicado: false });
+    const repetido = await correo('NOTIFICA FALLO TUTELA 110013109017-2026 - 9795 Accionante: PERSONA DE EJEMPLO', {
+      adjuntos: ['10. Fallo de tutela 9795. Hecho superado.pdf'],
+    });
+    expect(repetido.body.data).toMatchObject({ vinculado: true, duplicado: true });
+
+    const respuesta = await correo('RE: Solicitud urgente de información – Acción de Tutela Rad. 11001311002020260077500');
+    expect(respuesta.body.data).toMatchObject({ vinculado: true, tramiteId: familia.id });
+    const porTexto = await correo('NOTIFICA AUTO', { texto: 'Tutela 2026-09795 en este despacho' });
+    expect(porTexto.body.data).toMatchObject({ vinculado: true, tramiteId: penal.id });
+
+    const detalle = (await conLlave(api().get(`/v1/tramites/${penal.id}`))).body.data;
+    const porCategoria = Object.fromEntries(
+      detalle.actuaciones.map((item: { categoria: string; fecha: string; anotacion: string }) => [item.categoria, item]),
+    );
+    expect(Object.keys(porCategoria).sort()).toEqual(['FALLO', 'OTRA']);
+    expect(porCategoria.FALLO).toMatchObject({ fecha: '2026-11-11', despacho: 'Juzgado 17 Penal Circuito Conocimiento - Bogotá' });
+    expect(porCategoria.FALLO.anotacion).toContain('Hecho superado.pdf');
+    const avisos = await datos.query(`SELECT payload->'datos'->>'origen' AS origen FROM eventos`);
+    expect(avisos).toEqual([{ origen: 'CORREO' }, { origen: 'CORREO' }, { origen: 'CORREO' }]);
+
+    await crearTutela('05001310901720260979500');
+    expect((await correo('Tutela 2026-09795 nueva actuacion', { texto: 'x' })).body.data).toEqual({ vinculado: false, motivo: 'AMBIGUO' });
+    expect((await correo('Cordial saludo')).body.data).toEqual({ vinculado: false, motivo: 'SIN_RADICADO' });
+    expect((await correo('Rad. 76001310300120260000100')).body.data).toEqual({ vinculado: false, motivo: 'SIN_TRAMITE' });
+    const falso = await correo('NOTIFICA FALLO 11001311002020260077500', { from: 'juez@ramajudicial.gov.co.estafa.com' });
+    expect(falso.body.data).toEqual({ vinculado: false, motivo: 'REMITENTE_NO_CONFIABLE' });
+    await correo('x', { date: 'ayer' }).expect(400);
+  });
+
   test('un cuerpo mal formado responde 400 y no 500', async () => {
     const respuesta = await conLlave(api().post('/v1/tramites')).set('content-type', 'application/json').send('{"tipo":').expect(400);
     expect(respuesta.body).toMatchObject({ success: false, data: null, error: { code: 'BAD_REQUEST' } });

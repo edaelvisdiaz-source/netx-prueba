@@ -10,7 +10,8 @@ import { FechaISO, hoyEnColombia } from '../terminos/dias-habiles';
 import { calcularTerminosTutela } from '../terminos/tutela';
 import { randomUUID } from 'node:crypto';
 import { Actuacion } from '../tramites/actuacion.entity';
-import { RegistrarActuacion } from '../tramites/dto';
+import { esRemitenteConfiable, extraerPistas, PistasRadicado, tituloDesdeAsunto } from '../correo/analizar-correo';
+import { CorreoEntrante, RegistrarActuacion } from '../tramites/dto';
 import { clasificarActuacion } from '../tramites/clasificacion';
 import { Tramite } from '../tramites/tramite.entity';
 import { TramitesService } from '../tramites/tramites.service';
@@ -23,8 +24,13 @@ const ERRORES_PARA_AVISAR = 5;
 const VARIACION_INTERVALO = 0.1;
 const LARGO_MAXIMO_NOTA = 400;
 const MAX_PROCESOS_POR_RADICADO = 20;
+const LARGO_MAXIMO_ANOTACION = 2000;
 
 type ActuacionEncontrada = ActuacionFuente & { readonly despacho: string | null };
+
+export type ResultadoCorreo =
+  | { readonly vinculado: true; readonly tramiteId: string; readonly duplicado: boolean }
+  | { readonly vinculado: false; readonly motivo: 'REMITENTE_NO_CONFIABLE' | 'SIN_RADICADO' | 'SIN_TRAMITE' | 'AMBIGUO' };
 
 export interface ResultadoRevision {
   readonly tramiteId: string;
@@ -120,12 +126,7 @@ export class MonitorService {
    */
   async registrarManual(tramiteId: string, datos: RegistrarActuacion): Promise<Actuacion> {
     const tramite = await this.tramitesService.obtener(tramiteId);
-    const existentes = await this.actuaciones.find({
-      where: { tramiteId },
-      select: { fecha: true, titulo: true },
-      order: { fecha: 'DESC' },
-    });
-    const encontrada: ActuacionEncontrada = {
+    return this.registrarExterna(tramite, 'MANUAL', {
       clave: `manual:${randomUUID()}`,
       fecha: datos.fecha,
       titulo: datos.titulo,
@@ -134,8 +135,71 @@ export class MonitorService {
       fechaFinTermino: null,
       fechaRegistro: hoyEnColombia(),
       despacho: tramite.despacho,
-    };
-    const categoria = clasificarActuacion(encontrada.titulo, encontrada.anotacion);
+    });
+  }
+
+  /**
+   * Convierte un correo de un despacho en una actuacion del tramite al que pertenece. El tramite
+   * se ubica por el radicado que aparece en el asunto, los adjuntos o el texto.
+   */
+  async registrarCorreo(correo: CorreoEntrante): Promise<ResultadoCorreo> {
+    if (!esRemitenteConfiable(correo.from, this.env.CORREO_DOMINIOS_CONFIABLES)) {
+      return { vinculado: false, motivo: 'REMITENTE_NO_CONFIABLE' };
+    }
+    const pistas = extraerPistas([correo.subject, ...(correo.adjuntos ?? []), correo.texto ?? ''].join('\n'));
+    const tramite = await this.buscarPorPistas(pistas);
+    if (tramite === 'AMBIGUO' || tramite === 'SIN_RADICADO' || tramite === 'SIN_TRAMITE') {
+      return { vinculado: false, motivo: tramite };
+    }
+    const clave = `correo:${correo.messageId}`;
+    const yaExiste = await this.actuaciones.existsBy({ tramiteId: tramite.id, claveFuente: clave });
+    if (yaExiste) return { vinculado: true, tramiteId: tramite.id, duplicado: true };
+    const adjuntos = correo.adjuntos?.length ? ` Adjuntos: ${correo.adjuntos.join('; ')}.` : '';
+    await this.registrarExterna(tramite, 'CORREO', {
+      clave,
+      fecha: hoyEnColombia(new Date(correo.date)),
+      titulo: tituloDesdeAsunto(correo.subject),
+      anotacion: `Notificado por correo desde ${correo.fromNombre ?? correo.from}.${adjuntos}`.slice(0, LARGO_MAXIMO_ANOTACION),
+      fechaInicioTermino: null,
+      fechaFinTermino: null,
+      fechaRegistro: hoyEnColombia(),
+      despacho: correo.fromNombre ?? tramite.despacho,
+    });
+    return { vinculado: true, tramiteId: tramite.id, duplicado: false };
+  }
+
+  private async buscarPorPistas(pistas: PistasRadicado): Promise<Tramite | 'AMBIGUO' | 'SIN_RADICADO' | 'SIN_TRAMITE'> {
+    if (pistas.completos.length + pistas.prefijos.length + pistas.anoConsecutivo.length === 0) return 'SIN_RADICADO';
+    const busquedas: Array<() => Promise<Tramite[]>> = [
+      () => (pistas.completos.length ? this.tramites.findBy({ radicado: In([...pistas.completos]) }) : Promise.resolve([])),
+      () =>
+        pistas.prefijos.length
+          ? this.tramites.createQueryBuilder('t').where('left(t.radicado, 21) IN (:...prefijos)', { prefijos: pistas.prefijos }).getMany()
+          : Promise.resolve([]),
+      () =>
+        pistas.anoConsecutivo.length
+          ? this.tramites
+              .createQueryBuilder('t')
+              .where(`t.fuente = 'RAMA_JUDICIAL_CPNU' AND substring(t.radicado from 13 for 9) IN (:...claves)`, { claves: pistas.anoConsecutivo })
+              .getMany()
+          : Promise.resolve([]),
+    ];
+    for (const buscar of busquedas) {
+      const hallados = await buscar();
+      if (hallados.length === 1) return hallados[0];
+      if (hallados.length > 1) return 'AMBIGUO';
+    }
+    return 'SIN_TRAMITE';
+  }
+
+  private async registrarExterna(tramite: Tramite, origen: 'MANUAL' | 'CORREO', encontrada: ActuacionEncontrada): Promise<Actuacion> {
+    const tramiteId = tramite.id;
+    const existentes = await this.actuaciones.find({
+      where: { tramiteId },
+      select: { fecha: true, titulo: true },
+      order: { fecha: 'DESC' },
+    });
+    const categoria = clasificarActuacion(encontrada.titulo, null);
     const resumen = (await this.resumir(tramite, [encontrada], existentes)).get(encontrada.clave) ?? null;
     return this.dataSource.transaction(async (em) => {
       const guardada = await em.save(
@@ -166,7 +230,7 @@ export class MonitorService {
           actuacion: { fecha: encontrada.fecha, titulo: encontrada.titulo, anotacion: encontrada.anotacion, despacho: encontrada.despacho, categoria },
           resumen,
           notaSugerida: resumen ? `Radika: ${resumen.resumen}`.slice(0, LARGO_MAXIMO_NOTA) : notaSugerida(encontrada),
-          origen: 'MANUAL',
+          origen,
         },
       });
       return guardada;

@@ -72,6 +72,7 @@ siempre el mismo sobre:
 | `DELETE /v1/tramites/:id` | Elimina el trámite y su historial |
 | `POST /v1/tramites/:id/revisar` | Revisa ahora mismo, sin esperar el turno |
 | `POST /v1/tramites/:id/actuaciones` | Registra una actuación revisada a mano (`fecha`, `titulo`, `anotacion`) |
+| `POST /v1/correos` | Recibe un correo de un despacho y lo enlaza con su trámite |
 | `GET /v1/eventos` | Novedades en orden, con `cursor` y `limit` |
 | `POST /v1/eventos/reintentar` | Vuelve a poner en cola los avisos que agotaron sus intentos |
 
@@ -150,6 +151,35 @@ lenguaje sencillo. El resultado se guarda con la actuación y viaja en el aviso:
 - El modelo se cambia con `RESUMEN_IA_MODELO`. Si el modelo declina una petición, la API la
   reintenta sola con un modelo de respaldo.
 - El resumen es una ayuda de lectura, no un concepto jurídico.
+
+## Correos de los juzgados
+
+Los juzgados notifican por correo la admisión, el fallo y los demás autos. `POST /v1/correos`
+recibe cada correo y lo convierte en una actuación del trámite al que pertenece:
+
+```json
+{
+  "messageId": "<...@exchangelabs.com>",
+  "from": "j17pccbt@cendoj.ramajudicial.gov.co",
+  "fromNombre": "Juzgado 17 Penal Circuito Conocimiento - Bogotá",
+  "subject": "NOTIFICA FALLO TUTELA 110013109017-2026 - 9795 Accionante: ...",
+  "date": "2026-11-11T21:54:06Z",
+  "adjuntos": ["10. Fallo de tutela 9795.pdf"],
+  "texto": "opcional; solo se usa para buscar el radicado y no se guarda"
+}
+```
+
+- El trámite se ubica por el radicado: completo (23 dígitos, con o sin guiones), por despacho
+  + año + consecutivo (`110013109017-2026 - 9795`) o, si un solo trámite coincide, por año +
+  consecutivo (`2026-09795`).
+- Responde `{ "vinculado": true, "tramiteId": "...", "duplicado": false }`, o
+  `{ "vinculado": false, "motivo": "..." }` con `SIN_RADICADO`, `SIN_TRAMITE`, `AMBIGUO` o
+  `REMITENTE_NO_CONFIABLE`. Los no vinculados no se guardan: quien envía decide qué hacer.
+- El mismo correo enviado dos veces no duplica la actuación.
+- Solo se aceptan remitentes de los dominios de `CORREO_DOMINIOS_CONFIABLES`. Radika confía
+  en que quien lee el buzón ya verificó la autenticidad del correo (SPF/DKIM).
+- Esta ruta recibe correos; el lector que vigila el buzón y los envía aquí es una pieza aparte,
+  todavía pendiente.
 
 ## Revisión asistida
 
