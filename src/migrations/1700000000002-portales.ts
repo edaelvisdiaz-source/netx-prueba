@@ -5,8 +5,8 @@ export class Portales1700000000002 implements MigrationInterface {
 
   async up(runner: QueryRunner): Promise<void> {
     await runner.query(`ALTER TABLE tramites DROP CONSTRAINT tramites_fuente_check`);
-    await runner.query(`ALTER TABLE tramites ADD CONSTRAINT tramites_fuente_check CHECK (fuente IN ('RAMA_JUDICIAL_CPNU','MANUAL','MEN_PORTAL'))`);
-    await runner.query(`ALTER TABLE tramites ADD COLUMN estado_fuente text, ADD COLUMN estado_fuente_desde timestamptz`);
+    await runner.query(`ALTER TABLE tramites ADD CONSTRAINT tramites_fuente_check CHECK (fuente IN ('RAMA_JUDICIAL_CPNU','MANUAL','MEN_CONVALIDACION','MEN_LEGALIZACION'))`);
+    await runner.query(`ALTER TABLE tramites ADD COLUMN estado_fuente text, ADD COLUMN estado_fuente_desde timestamptz, ADD COLUMN credencial_rechazada boolean NOT NULL DEFAULT false`);
     await runner.query(`
       CREATE TABLE credenciales (
         tramite_id uuid PRIMARY KEY REFERENCES tramites(id) ON DELETE CASCADE,
@@ -28,7 +28,7 @@ export class Portales1700000000002 implements MigrationInterface {
   async down(runner: QueryRunner): Promise<void> {
     await runner.query(`DROP TABLE accesos_portal`);
     await runner.query(`DROP TABLE credenciales`);
-    await runner.query(`ALTER TABLE tramites DROP COLUMN estado_fuente, DROP COLUMN estado_fuente_desde`);
+    await runner.query(`ALTER TABLE tramites DROP COLUMN estado_fuente, DROP COLUMN estado_fuente_desde, DROP COLUMN credencial_rechazada`);
     await runner.query(`ALTER TABLE tramites DROP CONSTRAINT tramites_fuente_check`);
     await runner.query(`ALTER TABLE tramites ADD CONSTRAINT tramites_fuente_check CHECK (fuente IN ('RAMA_JUDICIAL_CPNU','MANUAL'))`);
   }

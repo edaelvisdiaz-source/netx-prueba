@@ -63,7 +63,11 @@ export class TramitesController {
 
   @Patch('v1/tramites/:id')
   async actualizar(@Param('id', ParseUUIDPipe) id: string, @Body() cuerpo: unknown) {
-    return ok(await this.tramites.actualizar(id, validar(actualizarTramiteSchema, cuerpo)));
+    const cambios = validar(actualizarTramiteSchema, cuerpo);
+    const actualizado = await this.tramites.actualizar(id, cambios);
+    // Un tramite cerrado ya no necesita la clave del cliente: se borra.
+    if (cambios.estado === 'CERRADO') await this.boveda.eliminar(id);
+    return ok(actualizado);
   }
 
   @Delete('v1/tramites/:id')
@@ -85,8 +89,10 @@ export class TramitesController {
   @Throttle({ default: { limit: CAMBIOS_DE_CREDENCIAL_POR_MINUTO, ttl: VENTANA_MS } })
   async guardarCredencial(@Param('id', ParseUUIDPipe) id: string, @Body() cuerpo: unknown) {
     const credencial = validar(credencialSchema, cuerpo);
-    await this.tramites.activarPortal(id);
+    await this.tramites.exigirTipoConPortal(id);
+    this.boveda.exigirConfigurada();
     await this.boveda.guardar(id, credencial);
+    await this.tramites.activarPortal(id);
     return ok({ credencialConfigurada: true });
   }
 

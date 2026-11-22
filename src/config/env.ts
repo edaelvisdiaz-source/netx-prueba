@@ -43,6 +43,11 @@ const esquema = z
     IMAP_CARPETA: z.string().min(1).default('INBOX'),
     /** Llave de 32 bytes en base64 para cifrar las credenciales de los portales (openssl rand -base64 32). */
     CREDENCIALES_LLAVE: z.string().min(40).optional().or(z.literal('').transform(() => undefined)),
+    /** Llaves anteriores, separadas por coma, para poder cambiar CREDENCIALES_LLAVE sin perder lo guardado. */
+    CREDENCIALES_LLAVES_ANTERIORES: z
+      .string()
+      .default('')
+      .transform((valor) => valor.split(',').map((llave) => llave.trim()).filter(Boolean)),
     /** Cada cuantas horas se revisa un tramite en un portal con inicio de sesion. */
     PORTAL_INTERVALO_HORAS: z.coerce.number().min(1).max(168).default(24),
     RESUMENES_POR_REVISION: z.coerce.number().int().min(0).max(50).default(10),

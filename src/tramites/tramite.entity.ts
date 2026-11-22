@@ -19,6 +19,8 @@ export class Tramite {
   /** Estado tal como lo muestra el portal de la entidad (tramites con inicio de sesion). */
   @Column({ name: 'estado_fuente', type: 'text', nullable: true }) estadoFuente!: string | null;
   @Column({ name: 'estado_fuente_desde', type: 'timestamptz', nullable: true }) estadoFuenteDesde!: Date | null;
+  /** El portal rechazo la clave: no se vuelve a intentar hasta que se registre una nueva. */
+  @Column({ name: 'credencial_rechazada', type: 'boolean', default: false }) credencialRechazada!: boolean;
   @Column({ name: 'ultima_revision_at', type: 'timestamptz', nullable: true }) ultimaRevisionAt!: Date | null;
   @Column({ name: 'sincronizado_at', type: 'timestamptz', nullable: true }) sincronizadoAt!: Date | null;
   @Column({ name: 'proxima_revision_at', type: 'timestamptz' }) proximaRevisionAt!: Date;

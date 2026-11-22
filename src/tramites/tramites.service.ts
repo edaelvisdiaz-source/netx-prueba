@@ -7,7 +7,7 @@ import { Actuacion } from './actuacion.entity';
 import { ActualizarTramite, CrearTramite, ListarTramites } from './dto';
 import { EnlaceConsulta, enlacesDeConsulta } from './enlaces';
 import { normalizarRadicadoJudicial, normalizarRadicadoLibre } from './radicado';
-import { esTipoJudicial, esTipoMen, fuentePorDefecto } from './tipos';
+import { esFuentePortal, esTipoJudicial, fuentePorDefecto, portalDe } from './tipos';
 import { Tramite } from './tramite.entity';
 
 const PG_VIOLACION_UNICA = '23505';
@@ -32,8 +32,8 @@ export class TramitesService {
     if (esJudicial && !esTipoJudicial(datos.tipo)) {
       throw new BadRequestException('La Rama Judicial solo aplica a tutelas y procesos judiciales');
     }
-    if (fuente === 'MEN_PORTAL' && !esTipoMen(datos.tipo)) {
-      throw new BadRequestException('El portal del Ministerio solo aplica a convalidaciones, legalizaciones y SAC');
+    if (esFuentePortal(fuente) && fuente !== portalDe(datos.tipo)) {
+      throw new BadRequestException('Esa fuente no corresponde al tipo de tramite');
     }
     const radicado = esJudicial
       ? normalizarRadicadoJudicial(datos.radicado)
@@ -104,12 +104,19 @@ export class TramitesService {
   }
 
   /** Al registrar la credencial, un tramite del Ministerio pasa a revisarse solo en su portal. */
-  async activarPortal(id: string): Promise<void> {
-    const tramite = await this.obtener(id);
-    if (!esTipoMen(tramite.tipo)) {
+  async exigirTipoConPortal(id: string): Promise<void> {
+    if (portalDe((await this.obtener(id)).tipo) === null) {
       throw new BadRequestException('Este tipo de tramite no se consulta con usuario y clave');
     }
-    await this.tramites.update({ id }, { fuente: 'MEN_PORTAL', proximaRevisionAt: new Date() });
+  }
+
+  async activarPortal(id: string): Promise<void> {
+    const fuente = portalDe((await this.obtener(id)).tipo);
+    if (fuente === null) return;
+    await this.tramites.update(
+      { id },
+      { fuente, proximaRevisionAt: new Date(), credencialRechazada: false, ultimoError: null, erroresConsecutivos: 0 },
+    );
   }
 
   async eliminar(id: string): Promise<void> {

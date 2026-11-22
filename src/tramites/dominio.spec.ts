@@ -1,6 +1,6 @@
 import { clasificarActuacion } from './clasificacion';
 import { normalizarRadicadoJudicial, normalizarRadicadoLibre } from './radicado';
-import { esTipoJudicial, fuentePorDefecto } from './tipos';
+import { esFuentePortal, esTipoJudicial, fuentePorDefecto, portalDe } from './tipos';
 
 describe('radicado', () => {
   test('acepta 23 digitos con o sin separadores', () => {
@@ -26,6 +26,15 @@ describe('tipos', () => {
     expect(esTipoJudicial('TUTELA')).toBe(true);
     expect(fuentePorDefecto('TUTELA')).toBe('RAMA_JUDICIAL_CPNU');
     expect(fuentePorDefecto('CONVALIDACION_MEN')).toBe('MANUAL');
+  });
+
+  test('convalidacion y legalizacion del Ministerio son dos portales distintos', () => {
+    expect(portalDe('CONVALIDACION_MEN')).toBe('MEN_CONVALIDACION');
+    expect(portalDe('LEGALIZACION_MEN')).toBe('MEN_LEGALIZACION');
+    expect(portalDe('SAC_MEN')).toBeNull();
+    expect(portalDe('TUTELA')).toBeNull();
+    expect(esFuentePortal('MEN_LEGALIZACION')).toBe(true);
+    expect(esFuentePortal('MANUAL')).toBe(false);
   });
 });
 

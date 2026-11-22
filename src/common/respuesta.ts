@@ -47,7 +47,9 @@ export class FiltroErrores implements ExceptionFilter {
       const estado = excepcion.getStatus();
       const cuerpo = excepcion.getResponse();
       const detalle = typeof cuerpo === 'object' && cuerpo !== null ? (cuerpo as Record<string, unknown>) : {};
-      const mensaje = typeof detalle.message === 'string' ? detalle.message : excepcion.message;
+      const original = typeof detalle.message === 'string' ? detalle.message : excepcion.message;
+      // El lector de JSON puede citar un pedazo del cuerpo recibido; no se repite.
+      const mensaje = estado === HttpStatus.BAD_REQUEST && detalle.details === undefined && /JSON/i.test(original) ? 'JSON invalido' : original;
       respuesta.status(estado).json({
         success: false,
         data: null,

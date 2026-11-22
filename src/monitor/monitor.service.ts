@@ -1,10 +1,10 @@
 import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, IsNull, Not, Repository } from 'typeorm';
-import { BovedaService } from '../boveda/boveda.service';
+import { BovedaService, CredencialIlegibleError } from '../boveda/boveda.service';
 import { ENV, Env } from '../config/env';
 import { ActuacionFuente, FuenteError } from '../fuentes/fuente';
-import { FuentePortal, PortalError } from '../fuentes/fuente-portal';
+import { EstadoPortal, FuentePortal, PortalError } from '../fuentes/fuente-portal';
 import { FuentesRegistry } from '../fuentes/fuentes.registry';
 import { EventosService } from '../notificaciones/eventos.service';
 import { ResumenActuacion, Resumidor } from '../resumen/resumidor';
@@ -28,6 +28,16 @@ const LARGO_MAXIMO_NOTA = 400;
 const MAX_PROCESOS_POR_RADICADO = 20;
 const LARGO_MAXIMO_ANOTACION = 2000;
 const LARGO_MAXIMO_TITULO = 200;
+const PORTAL_ESPERA_MINIMA_MINUTOS = 10;
+
+type CodigoPortal = PortalError['codigo'] | 'SIN_CREDENCIAL' | 'CREDENCIAL_ILEGIBLE';
+const MENSAJES_PORTAL: Readonly<Record<CodigoPortal, string>> = {
+  CREDENCIAL_INVALIDA: 'El portal rechazo el usuario o la clave; registra la credencial correcta para volver a revisar',
+  NO_DISPONIBLE: 'El portal no respondio',
+  FORMATO: 'El portal cambio su pagina y no se pudo leer el estado',
+  SIN_CREDENCIAL: 'Falta registrar el usuario y la clave del portal',
+  CREDENCIAL_ILEGIBLE: 'No se pudo leer la credencial guardada; registrala de nuevo',
+};
 
 type ActuacionEncontrada = ActuacionFuente & { readonly despacho: string | null };
 
@@ -248,7 +258,7 @@ export class MonitorService {
       `UPDATE tramites SET proxima_revision_at = now() + make_interval(mins => $2)
        WHERE id IN (
          SELECT id FROM tramites
-         WHERE estado = 'ACTIVO' AND fuente = ANY($3) AND proxima_revision_at <= now()
+         WHERE estado = 'ACTIVO' AND fuente = ANY($3) AND NOT credencial_rechazada AND proxima_revision_at <= now()
          ORDER BY proxima_revision_at LIMIT $1 FOR UPDATE SKIP LOCKED
        ) RETURNING id`,
       [this.env.REVISION_LOTE, RESERVA_MINUTOS, this.fuentes.disponibles()],
@@ -299,72 +309,105 @@ export class MonitorService {
 
   /** Entra al portal con la credencial del cliente, lee el estado y registra el cambio si lo hubo. */
   private async revisarPortal(tramite: Tramite, portal: FuentePortal, primera: boolean): Promise<ResultadoRevision> {
-    const base = { tramiteId: tramite.id, primeraSincronizacion: primera };
-    const proxima = new Date(Date.now() + this.env.PORTAL_INTERVALO_HORAS * MS_HORA * (1 + (Math.random() * 2 - 1) * VARIACION_INTERVALO));
-    const credencial = await this.boveda.leer(tramite.id);
-    if (!credencial) {
-      const mensaje = 'Falta registrar el usuario y la clave del portal';
-      await this.tramites.update({ id: tramite.id }, { ultimaRevisionAt: new Date(), proximaRevisionAt: proxima, ultimoError: mensaje });
-      return { ...base, encontrado: false, actuacionesNuevas: 0, error: mensaje };
+    const sinCambio = (error: string): ResultadoRevision => ({
+      tramiteId: tramite.id, primeraSincronizacion: primera, encontrado: false, actuacionesNuevas: 0, error,
+    });
+    // Tres frenos antes de tocar el portal: cada ingreso usa la cuenta real del cliente.
+    if (tramite.estado !== 'ACTIVO') return sinCambio('El tramite no esta activo');
+    if (tramite.credencialRechazada) return sinCambio(MENSAJES_PORTAL.CREDENCIAL_INVALIDA);
+    const desdeUltima = tramite.ultimaRevisionAt ? Date.now() - tramite.ultimaRevisionAt.getTime() : Infinity;
+    if (desdeUltima < PORTAL_ESPERA_MINIMA_MINUTOS * MS_MINUTO) {
+      return sinCambio(`Se reviso hace menos de ${PORTAL_ESPERA_MINIMA_MINUTOS} minutos; espera antes de volver a entrar al portal`);
     }
+
+    const proxima = new Date(Date.now() + this.env.PORTAL_INTERVALO_HORAS * MS_HORA * (1 + (Math.random() * 2 - 1) * VARIACION_INTERVALO));
+    let lectura: EstadoPortal;
     try {
-      const lectura = await portal.consultarEstado(credencial, tramite.radicado);
-      await this.boveda.anotarAcceso(tramite.id, portal.id, 'OK');
-      const cambio = lectura.estado !== tramite.estadoFuente;
-      await this.tramites.update(
+      const credencial = await this.boveda.leer(tramite.id);
+      if (!credencial) return await this.anotarFalloPortal(tramite, portal, 'SIN_CREDENCIAL', proxima, sinCambio);
+      lectura = await portal.consultarEstado(credencial, tramite.radicado);
+    } catch (error) {
+      const codigo: CodigoPortal =
+        error instanceof PortalError ? error.codigo : error instanceof CredencialIlegibleError ? 'CREDENCIAL_ILEGIBLE' : 'NO_DISPONIBLE';
+      if (!(error instanceof PortalError) && !(error instanceof CredencialIlegibleError)) {
+        this.logger.error(`Fallo inesperado del portal ${portal.id} en el tramite ${tramite.id}: ${error instanceof Error ? error.name : 'error'}`);
+      }
+      return this.anotarFalloPortal(tramite, portal, codigo, proxima, sinCambio);
+    }
+
+    await this.boveda.anotarAcceso(tramite.id, portal.id, 'OK');
+    const cambio = lectura.estado !== tramite.estadoFuente;
+    await this.tramites.update(
+      { id: tramite.id },
+      {
+        ultimaRevisionAt: new Date(),
+        sincronizadoAt: tramite.sincronizadoAt ?? new Date(),
+        proximaRevisionAt: proxima,
+        ultimoError: null,
+        erroresConsecutivos: 0,
+        ...(cambio ? { estadoFuente: lectura.estado, estadoFuenteDesde: new Date() } : {}),
+      },
+    );
+    if (primera) {
+      await this.eventos.registrar(this.dataSource.manager, {
+        tramite,
+        tipo: 'TRAMITE_SINCRONIZADO',
+        claveDedupe: `sincronizado:${tramite.id}`,
+        datos: { estado: lectura.estado, detalle: lectura.detalle },
+      });
+    } else if (cambio) {
+      await this.registrarExterna(tramite, 'PORTAL', {
+        clave: `portal:${randomUUID()}`,
+        fecha: hoyEnColombia(),
+        titulo: `Cambio de estado: ${lectura.estado}`.slice(0, LARGO_MAXIMO_TITULO),
+        anotacion: [`Antes: ${tramite.estadoFuente ?? 'sin estado'}.`, lectura.detalle].filter(Boolean).join(' ').slice(0, LARGO_MAXIMO_ANOTACION),
+        fechaInicioTermino: null,
+        fechaFinTermino: null,
+        fechaRegistro: hoyEnColombia(),
+        despacho: null,
+      });
+    }
+    return { tramiteId: tramite.id, primeraSincronizacion: primera, encontrado: true, actuacionesNuevas: !primera && cambio ? 1 : 0, error: null };
+  }
+
+  /**
+   * Registra un intento fallido en el portal. El mensaje sale de una lista fija: nunca se repite
+   * texto del portal ni del lector, que podria traer datos del cliente.
+   */
+  private async anotarFalloPortal(
+    tramite: Tramite,
+    portal: FuentePortal,
+    codigo: CodigoPortal,
+    proxima: Date,
+    sinCambio: (error: string) => ResultadoRevision,
+  ): Promise<ResultadoRevision> {
+    const mensaje = MENSAJES_PORTAL[codigo];
+    const rechazada = codigo === 'CREDENCIAL_INVALIDA';
+    const errores = tramite.erroresConsecutivos + 1;
+    if (codigo !== 'SIN_CREDENCIAL' && codigo !== 'CREDENCIAL_ILEGIBLE') await this.boveda.anotarAcceso(tramite.id, portal.id, codigo);
+    await this.dataSource.transaction(async (em) => {
+      await em.update(
+        Tramite,
         { id: tramite.id },
         {
           ultimaRevisionAt: new Date(),
-          sincronizadoAt: tramite.sincronizadoAt ?? new Date(),
           proximaRevisionAt: proxima,
-          ultimoError: null,
-          erroresConsecutivos: 0,
-          ...(cambio ? { estadoFuente: lectura.estado, estadoFuenteDesde: new Date() } : {}),
+          ultimoError: mensaje,
+          erroresConsecutivos: errores,
+          // Una clave rechazada no se vuelve a probar: varios intentos pueden bloquear la cuenta del cliente.
+          ...(rechazada ? { credencialRechazada: true } : {}),
         },
       );
-      if (primera) {
-        await this.eventos.registrar(this.dataSource.manager, {
+      if (rechazada || errores === ERRORES_PARA_AVISAR) {
+        await this.eventos.registrar(em, {
           tramite,
-          tipo: 'TRAMITE_SINCRONIZADO',
-          claveDedupe: `sincronizado:${tramite.id}`,
-          datos: { estado: lectura.estado, detalle: lectura.detalle },
-        });
-      } else if (cambio) {
-        await this.registrarExterna(tramite, 'PORTAL', {
-          clave: `portal:${randomUUID()}`,
-          fecha: hoyEnColombia(),
-          titulo: `Cambio de estado: ${lectura.estado}`.slice(0, LARGO_MAXIMO_TITULO),
-          anotacion: [`Antes: ${tramite.estadoFuente ?? 'sin estado'}.`, lectura.detalle].filter(Boolean).join(' ').slice(0, LARGO_MAXIMO_ANOTACION),
-          fechaInicioTermino: null,
-          fechaFinTermino: null,
-          fechaRegistro: hoyEnColombia(),
-          despacho: null,
+          tipo: 'ERROR_FUENTE',
+          claveDedupe: `error:${tramite.id}:${hoyEnColombia()}`,
+          datos: { mensaje, codigo, erroresConsecutivos: errores },
         });
       }
-      return { ...base, encontrado: true, actuacionesNuevas: !primera && cambio ? 1 : 0, error: null };
-    } catch (error) {
-      if (!(error instanceof PortalError)) throw error;
-      await this.boveda.anotarAcceso(tramite.id, portal.id, error.codigo);
-      const errores = tramite.erroresConsecutivos + 1;
-      // Una clave rechazada no se reintenta pronto: varios intentos fallidos pueden bloquear la cuenta del cliente.
-      const avisar = error.codigo === 'CREDENCIAL_INVALIDA' || errores === ERRORES_PARA_AVISAR;
-      await this.dataSource.transaction(async (em) => {
-        await em.update(
-          Tramite,
-          { id: tramite.id },
-          { ultimaRevisionAt: new Date(), proximaRevisionAt: proxima, ultimoError: error.message, erroresConsecutivos: errores },
-        );
-        if (avisar) {
-          await this.eventos.registrar(em, {
-            tramite,
-            tipo: 'ERROR_FUENTE',
-            claveDedupe: `error:${tramite.id}:${hoyEnColombia()}`,
-            datos: { mensaje: error.message, codigo: error.codigo, erroresConsecutivos: errores },
-          });
-        }
-      });
-      return { ...base, encontrado: false, actuacionesNuevas: 0, error: error.message };
-    }
+    });
+    return sinCambio(mensaje);
   }
 
   private async guardar(

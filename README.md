@@ -239,22 +239,40 @@ al desplegar, con el buzón de verdad.
 
 ## Portales con usuario y clave
 
-Para los trámites del Ministerio de Educación, el radicador escribe en el CRM el usuario y la
-clave del cliente, y el CRM los envía con `PUT /v1/tramites/:id/credencial`.
+El Ministerio de Educación no avisa por correo: hay que entrar a su plataforma. Radika lo
+trata como dos portales distintos, uno por proceso:
+
+| Tipo de trámite | Fuente | Qué se consulta |
+|---|---|---|
+| `CONVALIDACION_MEN` | `MEN_CONVALIDACION` | Estado de la solicitud de convalidación |
+| `LEGALIZACION_MEN` | `MEN_LEGALIZACION` | Proceso de legalización |
+
+El radicador escribe en el CRM el usuario y la clave del cliente, y el CRM los envía con
+`PUT /v1/tramites/:id/credencial`.
 
 - Se guardan cifrados (AES-256-GCM) con `CREDENCIALES_LLAVE`, que vive fuera de la base de
   datos. Una copia de la base no sirve para leerlos.
 - Ninguna ruta los devuelve. El detalle del trámite solo dice `credencialConfigurada: true`.
-- Al guardarla, el trámite pasa a la fuente `MEN_PORTAL` y Radika lo revisa una vez al día.
+- Al guardarla, el trámite pasa a la fuente de su portal y Radika lo revisa una vez al día.
 - La primera lectura produce `TRAMITE_SINCRONIZADO` con el estado. Cada cambio de estado se
   registra como actuación ("Cambio de estado: …") y sale como `ACTUACION_NUEVA` con
   `"origen": "PORTAL"`. El estado vigente queda en `tramite.estadoFuente`.
-- Si el portal rechaza la clave, Radika avisa de inmediato con `ERROR_FUENTE` y no vuelve a
-  intentar hasta el día siguiente, para no bloquear la cuenta del cliente.
 - Cada ingreso queda en la bitácora (`GET /v1/tramites/:id/accesos`).
+- Al cerrar el trámite (`estado: CERRADO`) la credencial se borra.
 
-El lector que entra al portal y lee la pantalla de estado todavía no existe: mientras no esté
-instalado, estos trámites no se revisan solos y siguen por revisión asistida.
+Protecciones para no bloquear la cuenta del cliente:
+
+- Si el portal rechaza la clave, Radika avisa con `ERROR_FUENTE` y **no vuelve a entrar** con
+  esa credencial, ni sola ni con `revisar`, hasta que registren una nueva.
+- Entre dos ingresos al portal del mismo trámite pasan al menos 10 minutos.
+- Un trámite pausado o cerrado no se consulta.
+- Los mensajes de error salen de una lista fija; nunca repiten texto del portal.
+
+Para cambiar `CREDENCIALES_LLAVE`, pon la anterior en `CREDENCIALES_LLAVES_ANTERIORES`: lo
+guardado se sigue leyendo y se vuelve a cifrar con la nueva al usarse.
+
+Los lectores que entran a cada portal y leen la pantalla todavía no existen: mientras no estén
+instalados, estos trámites no se revisan solos y siguen por revisión asistida.
 
 ## Revisión asistida
 

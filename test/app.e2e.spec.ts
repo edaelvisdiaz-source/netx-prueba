@@ -51,7 +51,7 @@ class ResumidorFalso extends Resumidor {
 }
 
 class PortalFalso extends FuentePortal {
-  readonly id = 'MEN_PORTAL' as const;
+  readonly id = 'MEN_CONVALIDACION' as const;
   estado: EstadoPortal = { estado: 'Radicado', detalle: null };
   fallo: PortalError | null = null;
   recibidas: Array<CredencialPortal & { radicado: string }> = [];
@@ -535,31 +535,38 @@ describe('Radika API', () => {
   });
 
   test('guarda la credencial cifrada, nunca la devuelve y revisa el portal del Ministerio', async () => {
-    const crear = (tipo: string, radicado: string) => conLlave(api().post('/v1/tramites')).send({ tipo, radicado, referenciaCrm: 'E4MXO9T4' });
-    const convalidacion = (await crear('CONVALIDACION_MEN', '2026-ER-100200')).body.data;
+    const crear = (cuerpo: Record<string, unknown>) => conLlave(api().post('/v1/tramites')).send({ referenciaCrm: 'E4MXO9T4', ...cuerpo });
+    const convalidacion = (await crear({ tipo: 'CONVALIDACION_MEN', radicado: '2026-ER-100200' })).body.data;
     const credencial = { usuario: 'cliente.ejemplo', clave: 'Cl4ve-Secreta!' };
     const ruta = `/v1/tramites/${convalidacion.id}`;
+    const monitor = app.get(MonitorService);
+    /** Simula que ya paso el tiempo minimo entre dos ingresos al portal. */
+    const revisar = async () => {
+      await datos.query(`UPDATE tramites SET ultima_revision_at = now() - interval '1 hour' WHERE id = $1`, [convalidacion.id]);
+      return monitor.revisar(convalidacion.id);
+    };
 
     await conLlave(api().put(`/v1/tramites/${(await crearTutela()).id}/credencial`)).send(credencial).expect(400);
     await conLlave(api().put(`${ruta}/credencial`)).send({ usuario: 'x' }).expect(400);
     await conLlave(api().put(`${ruta}/credencial`)).send(credencial).expect(200, { success: true, data: { credencialConfigurada: true }, error: null });
 
     const detalle = await conLlave(api().get(ruta)).expect(200);
-    expect(detalle.body.data).toMatchObject({ credencialConfigurada: true, tramite: { fuente: 'MEN_PORTAL' } });
+    expect(detalle.body.data).toMatchObject({ credencialConfigurada: true, tramite: { fuente: 'MEN_CONVALIDACION' } });
     expect(JSON.stringify(detalle.body)).not.toContain('Secreta');
     const [fila] = await datos.query('SELECT usuario, clave FROM credenciales');
     expect(fila.usuario).toMatch(/^v1:/);
     expect(JSON.stringify(fila)).not.toMatch(/cliente\.ejemplo|Secreta/);
 
-    const monitor = app.get(MonitorService);
     // Se revisan los dos tramites pendientes: la tutela de arriba y la convalidacion.
     expect(await monitor.revisarPendientes()).toBe(2);
     expect(portal.recibidas).toEqual([{ ...credencial, radicado: '2026-ER-100200' }]);
     expect((await conLlave(api().get(ruta))).body.data.tramite).toMatchObject({ estadoFuente: 'Radicado', ultimoError: null });
-    expect(await monitor.revisar(convalidacion.id)).toMatchObject({ encontrado: true, actuacionesNuevas: 0 });
+    expect(await monitor.revisar(convalidacion.id)).toMatchObject({ encontrado: false, error: expect.stringContaining('hace menos de 10 minutos') });
+    expect(portal.recibidas).toHaveLength(1);
+    expect(await revisar()).toMatchObject({ encontrado: true, actuacionesNuevas: 0 });
 
     portal.estado = { estado: 'Requerimiento de documentos', detalle: 'Falta el acta de grado apostillada' };
-    expect(await monitor.revisar(convalidacion.id)).toMatchObject({ actuacionesNuevas: 1, primeraSincronizacion: false });
+    expect(await revisar()).toMatchObject({ actuacionesNuevas: 1, primeraSincronizacion: false });
     const eventos = await datos.query(`SELECT tipo, payload->'datos' AS datos FROM eventos ORDER BY created_at`);
     expect(eventos.map((evento: { tipo: string }) => evento.tipo)).toEqual(['TRAMITE_SINCRONIZADO', 'ACTUACION_NUEVA']);
     expect(eventos[1].datos).toMatchObject({
@@ -567,29 +574,73 @@ describe('Radika API', () => {
       actuacion: { titulo: 'Cambio de estado: Requerimiento de documentos', categoria: 'REQUERIMIENTO', anotacion: 'Antes: Radicado. Falta el acta de grado apostillada' },
     });
 
-    portal.fallo = new PortalError('El portal rechazo el usuario o la clave', 'CREDENCIAL_INVALIDA');
-    expect(await monitor.revisar(convalidacion.id)).toMatchObject({ encontrado: false, error: expect.stringContaining('rechazo') });
-    expect((await datos.query(`SELECT count(*)::int AS n FROM eventos WHERE tipo = 'ERROR_FUENTE'`))[0].n).toBe(1);
-    portal.fallo = new PortalError('El portal no responde', 'NO_DISPONIBLE');
-    await monitor.revisar(convalidacion.id);
-    portal.fallo = null;
-    const mal = jest.spyOn(portal, 'consultarEstado').mockRejectedValueOnce(new Error('inesperado'));
-    await expect(monitor.revisar(convalidacion.id)).rejects.toThrow('inesperado');
-    mal.mockRestore();
+    portal.fallo = new PortalError('texto del portal con Cl4ve-Secreta!', 'NO_DISPONIBLE');
+    expect(await revisar()).toMatchObject({ error: 'El portal no respondio' });
+    const inesperado = jest.spyOn(portal, 'consultarEstado').mockRejectedValueOnce(new Error('timeout con Cl4ve-Secreta!'));
+    expect(await revisar()).toMatchObject({ error: 'El portal no respondio' });
+    inesperado.mockRestore();
+
+    // Clave rechazada: se avisa, y no se vuelve a entrar al portal hasta que registren otra.
+    portal.fallo = new PortalError('rechazada', 'CREDENCIAL_INVALIDA');
+    const intentos = portal.recibidas.length;
+    expect(await revisar()).toMatchObject({ encontrado: false, error: expect.stringContaining('rechazo el usuario o la clave') });
+    expect(portal.recibidas).toHaveLength(intentos + 1);
+    expect(await revisar()).toMatchObject({ error: expect.stringContaining('rechazo') });
+    await datos.query(`UPDATE tramites SET proxima_revision_at = now() - interval '1 day' WHERE id = $1`, [convalidacion.id]);
+    await monitor.revisarPendientes();
+    expect(portal.recibidas).toHaveLength(intentos + 1);
+    expect(await datos.query(`SELECT payload->'datos'->>'codigo' AS codigo FROM eventos WHERE tipo = 'ERROR_FUENTE'`)).toEqual([{ codigo: 'CREDENCIAL_INVALIDA' }]);
+    expect(JSON.stringify(await datos.query('SELECT ultimo_error FROM tramites UNION ALL SELECT payload::text FROM eventos'))).not.toContain('Secreta');
 
     const accesos = (await conLlave(api().get(`${ruta}/accesos`)).expect(200)).body.data;
-    expect(accesos.map((acceso: { resultado: string }) => acceso.resultado)).toEqual(['NO_DISPONIBLE', 'CREDENCIAL_INVALIDA', 'OK', 'OK', 'OK']);
+    expect(accesos.map((acceso: { resultado: string }) => acceso.resultado)).toEqual(['CREDENCIAL_INVALIDA', 'NO_DISPONIBLE', 'NO_DISPONIBLE', 'OK', 'OK', 'OK']);
 
-    await conLlave(api().delete(`${ruta}/credencial`)).expect(200, { success: true, data: { eliminada: true }, error: null });
-    await conLlave(api().delete(`${ruta}/credencial`)).expect(200, { success: true, data: { eliminada: false }, error: null });
-    expect(await monitor.revisar(convalidacion.id)).toMatchObject({ error: expect.stringContaining('Falta registrar') });
+    // Con una credencial nueva se levanta el freno.
+    portal.fallo = null;
+    await conLlave(api().put(`${ruta}/credencial`)).send({ usuario: 'cliente.ejemplo', clave: 'Nueva-2026' }).expect(200);
+    expect(await revisar()).toMatchObject({ encontrado: true, error: null });
+    expect(portal.recibidas.at(-1)).toMatchObject({ clave: 'Nueva-2026' });
 
-    await crear('TUTELA', '11001310300120260012399').send({ tipo: 'TUTELA', radicado: '11001310300120260012399', fuente: 'MEN_PORTAL' }).expect(400);
+    // Llave anterior: lo guardado se sigue leyendo y se vuelve a cifrar con la llave actual.
     const env = app.get<Env>(ENV);
     const repositorios = [datos.getRepository('Credencial'), datos.getRepository('AccesoPortal')] as const;
-    const sinLlave = new BovedaService(repositorios[0] as never, repositorios[1] as never, { ...env, CREDENCIALES_LLAVE: undefined });
-    await expect(sinLlave.guardar(convalidacion.id, credencial)).rejects.toThrow(/no esta configurada/);
-    expect(() => new BovedaService(repositorios[0] as never, repositorios[1] as never, { ...env, CREDENCIALES_LLAVE: Buffer.alloc(40, 1).toString('base64') })).toThrow(/32 bytes/);
+    const boveda = (cambios: Partial<Env>) => new BovedaService(repositorios[0] as never, repositorios[1] as never, { ...env, ...cambios });
+    const llaveNueva = Buffer.alloc(32, 9).toString('base64');
+    const rotada = boveda({ CREDENCIALES_LLAVE: llaveNueva, CREDENCIALES_LLAVES_ANTERIORES: [env.CREDENCIALES_LLAVE as string] });
+    expect(await rotada.leer(convalidacion.id)).toMatchObject({ clave: 'Nueva-2026' });
+    expect(await boveda({ CREDENCIALES_LLAVE: llaveNueva }).leer(convalidacion.id)).toMatchObject({ clave: 'Nueva-2026' });
+    expect(await revisar()).toMatchObject({ error: 'No se pudo leer la credencial guardada; registrala de nuevo' });
+    await expect(boveda({ CREDENCIALES_LLAVE: undefined }).guardar(convalidacion.id, credencial)).rejects.toThrow(/no esta configurada/);
+    expect(() => boveda({ CREDENCIALES_LLAVE: Buffer.alloc(40, 1).toString('base64') })).toThrow(/32 bytes/);
+
+    // Sin credencial, pausado o cerrado no se entra al portal; al cerrar se borra la clave.
+    await conLlave(api().delete(`${ruta}/credencial`)).expect(200, { success: true, data: { eliminada: true }, error: null });
+    await conLlave(api().delete(`${ruta}/credencial`)).expect(200, { success: true, data: { eliminada: false }, error: null });
+    expect(await revisar()).toMatchObject({ error: expect.stringContaining('Falta registrar') });
+    await conLlave(api().put(`${ruta}/credencial`)).send(credencial).expect(200);
+    await conLlave(api().patch(ruta)).send({ estado: 'CERRADO' }).expect(200);
+    expect((await conLlave(api().get(ruta))).body.data.credencialConfigurada).toBe(false);
+    expect(await revisar()).toMatchObject({ error: 'El tramite no esta activo' });
+  });
+
+  test('la convalidacion y la legalizacion del Ministerio usan portales distintos', async () => {
+    const crear = (cuerpo: Record<string, unknown>) => conLlave(api().post('/v1/tramites')).send(cuerpo);
+    const legalizacion = (await crear({ tipo: 'LEGALIZACION_MEN', radicado: 'LEG-2026-555' }).expect(201)).body.data;
+    expect(legalizacion.fuente).toBe('MANUAL');
+    await conLlave(api().put(`/v1/tramites/${legalizacion.id}/credencial`)).send({ usuario: 'u', clave: 'c' }).expect(200);
+    expect((await conLlave(api().get(`/v1/tramites/${legalizacion.id}`))).body.data.tramite.fuente).toBe('MEN_LEGALIZACION');
+    // Aun no hay lector para legalizaciones: no se revisa sola y la revision manual lo dice.
+    expect(await app.get(MonitorService).revisarPendientes()).toBe(0);
+    await conLlave(api().post(`/v1/tramites/${legalizacion.id}/revisar`)).expect(501);
+
+    expect((await crear({ tipo: 'CONVALIDACION_MEN', radicado: 'C-1', fuente: 'MEN_CONVALIDACION' }).expect(201)).body.data.fuente).toBe('MEN_CONVALIDACION');
+    await crear({ tipo: 'CONVALIDACION_MEN', radicado: 'C-2', fuente: 'MEN_LEGALIZACION' }).expect(400);
+    await crear({ tipo: 'TUTELA', radicado: '11001310300120260012399', fuente: 'MEN_CONVALIDACION' }).expect(400);
+    const sac = (await crear({ tipo: 'SAC_MEN', radicado: 'SAC-9' }).expect(201)).body.data;
+    await conLlave(api().put(`/v1/tramites/${sac.id}/credencial`)).send({ usuario: 'u', clave: 'c' }).expect(400);
+
+    const vacio = await conLlave(api().put(`/v1/tramites/${legalizacion.id}/credencial`)).set('content-type', 'application/json').send('{"usuario":"u","clave":"Secr3ta-del-cliente"').expect(400);
+    expect(JSON.stringify(vacio.body)).not.toContain('Secr3ta');
   });
 
   test('un cuerpo mal formado responde 400 y no 500', async () => {

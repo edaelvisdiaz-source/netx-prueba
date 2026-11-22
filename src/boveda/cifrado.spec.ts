@@ -21,5 +21,7 @@ describe('cifrado de la boveda', () => {
     expect(() => descifrar(llave, alterado, 'tramite-1:clave')).toThrow();
     expect(() => descifrar(llave, 'v0:a:b:c', 'tramite-1:clave')).toThrow(/desconocido/);
     expect(() => descifrar(llave, 'basura', 'tramite-1:clave')).toThrow(/desconocido/);
+    const selloCorto = [partes[0], partes[1], Buffer.from(partes[2], 'base64').subarray(0, 4).toString('base64'), partes[3]].join(':');
+    expect(() => descifrar(llave, selloCorto, 'tramite-1:clave')).toThrow(/desconocido/);
   });
 });
