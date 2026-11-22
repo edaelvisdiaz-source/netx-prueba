@@ -8,7 +8,7 @@ novedades y las entrega al CRM para que actualice la pestaña de Seguimiento.
 
 | Fase | Alcance | Estado |
 |---|---|---|
-| 1 | Tutelas y procesos judiciales (Rama Judicial), términos de tutela, avisos al CRM | Construida; falta la prueba en vivo contra la Rama Judicial |
+| 1 | Tutelas y procesos judiciales (Rama Judicial), términos de tutela, avisos al CRM | Construida; formato de la Rama Judicial comprobado con una tutela real |
 | 2 | Resumen de cada actuación con IA | Pendiente |
 | 3 | Ministerio de Educación: convalidaciones y legalizaciones (con usuario del cliente) | Pendiente |
 | 4 | Cancillería (apostillas) y SAC | Pendiente |

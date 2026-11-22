@@ -10,7 +10,7 @@ export const ESTADOS_TRAMITE = ['ACTIVO', 'PAUSADO', 'CERRADO'] as const;
 export type EstadoTramite = (typeof ESTADOS_TRAMITE)[number];
 
 export const CATEGORIAS_ACTUACION = [
-  'ADMISION', 'FALLO', 'IMPUGNACION', 'DESACATO', 'REQUERIMIENTO', 'OTRA',
+  'ADMISION', 'FALLO', 'IMPUGNACION', 'DESACATO', 'REQUERIMIENTO', 'REMISION_CORTE', 'OTRA',
 ] as const;
 export type CategoriaActuacion = (typeof CATEGORIAS_ACTUACION)[number];
 

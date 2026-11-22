@@ -37,6 +37,7 @@ describe('clasificacion de actuaciones', () => {
     ['Auto concede impugnación', null, 'IMPUGNACION'],
     ['Abre incidente de desacato', null, 'DESACATO'],
     ['Fijacion estado', 'Actuación registrada', 'OTRA'],
+    ['Remite Tutela Corte Constitucional', null, 'REMISION_CORTE'],
     ['AUTO ADMITE TUTELA', 'Se corre traslado; el fallo se proferira en 10 dias', 'ADMISION'],
     ['Constancia secretarial', 'Se recibe escrito de impugnacion', 'IMPUGNACION'],
     ['Constancia secretarial', 'Pasa al despacho para sentencia', 'OTRA'],
