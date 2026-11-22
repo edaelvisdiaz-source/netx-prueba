@@ -153,6 +153,33 @@ siempre el mismo sobre:
 - `radicado`: 23 dígitos para los judiciales (se aceptan guiones y espacios).
 - `referenciaCrm`: el código de la venta en el CRM. Vuelve en cada aviso para ubicar la tarjeta.
 
+## Usuarios y sesiones
+
+Radika se puede usar como herramienta propia, sin el CRM. Además de la llave de API (para
+otros sistemas), las personas entran con correo y clave:
+
+| Método y ruta | Qué hace |
+|---|---|
+| `POST /v1/sesion` | Inicia sesión (`email`, `clave`); deja una cookie de sesión de 12 horas |
+| `GET /v1/sesion` | Quién está conectado |
+| `DELETE /v1/sesion` | Cierra la sesión |
+| `PUT /v1/sesion/clave` | Cambia la clave propia (`actual`, `nueva`, mínimo 10 caracteres) |
+| `GET /v1/usuarios` | Lista de usuarios (administrador) |
+| `POST /v1/usuarios` | Crea un usuario y devuelve su clave temporal una sola vez (administrador) |
+| `PATCH /v1/usuarios/:id` | Activa o desactiva, cambia el rol o genera otra clave temporal (administrador) |
+
+- Quien entra con clave temporal solo puede cambiarla; hasta entonces no ve nada más.
+- Cinco intentos fallidos bloquean la cuenta 15 minutos.
+- La cookie es `HttpOnly` y `SameSite=Strict`. Todo cambio hecho con sesión debe traer además
+  el encabezado `X-Radika: 1`, que solo envía la aplicación.
+- Las claves se guardan como huella (scrypt); nadie las puede leer.
+
+El primer administrador se crea en el servidor:
+
+```bash
+docker exec radika node dist/cli/crear-usuario.js correo@ejemplo.com "Nombre Apellido" ADMIN
+```
+
 ## Avisos al CRM
 
 Si se definen `CRM_WEBHOOK_URL` y `CRM_WEBHOOK_SECRET`, Radika envía cada novedad con un

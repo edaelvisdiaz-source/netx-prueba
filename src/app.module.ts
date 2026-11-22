@@ -26,12 +26,16 @@ import { ClaudeResumidor, CLIENTE_ANTHROPIC, crearClienteAnthropic } from './res
 import { Resumidor } from './resumen/resumidor';
 import { Actuacion } from './tramites/actuacion.entity';
 import { Tramite } from './tramites/tramite.entity';
+import { Usuarios1700000000003 } from './migrations/1700000000003-usuarios';
+import { SesionController } from './usuarios/sesion.controller';
+import { Sesion, Usuario } from './usuarios/usuario.entity';
+import { UsuariosService } from './usuarios/usuarios.service';
 import { TramitesController } from './tramites/tramites.controller';
 import { TramitesService } from './tramites/tramites.service';
 
 const PETICIONES_POR_MINUTO = 120;
 const VENTANA_MS = 60_000;
-const ENTIDADES = [Tramite, Actuacion, Evento, Buzon, CorreoPendiente, Credencial, AccesoPortal];
+const ENTIDADES = [Tramite, Actuacion, Evento, Buzon, CorreoPendiente, Credencial, AccesoPortal, Usuario, Sesion];
 
 @Module({
   providers: [{ provide: ENV, useFactory: () => cargarEnv() }],
@@ -49,7 +53,7 @@ class ConfigModule {}
         type: 'postgres' as const,
         url: env.DATABASE_URL,
         entities: ENTIDADES,
-        migrations: [Inicial1700000000000, Buzon1700000000001, Portales1700000000002],
+        migrations: [Inicial1700000000000, Buzon1700000000001, Portales1700000000002, Usuarios1700000000003],
         migrationsRun: true,
         synchronize: false,
       }),
@@ -58,7 +62,7 @@ class ConfigModule {}
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([{ ttl: VENTANA_MS, limit: PETICIONES_POR_MINUTO }]),
   ],
-  controllers: [TramitesController],
+  controllers: [TramitesController, SesionController],
   providers: [
     { provide: HTTP_FETCH, useValue: fetch },
     { provide: APP_FILTER, useClass: FiltroErrores },
@@ -69,6 +73,7 @@ class ConfigModule {}
     // Los lectores de portales con inicio de sesion se agregan a esta lista cuando existan.
     { provide: PORTALES, useValue: [] },
     BovedaService,
+    UsuariosService,
     RamaJudicialFuente,
     FuentesRegistry,
     TramitesService,

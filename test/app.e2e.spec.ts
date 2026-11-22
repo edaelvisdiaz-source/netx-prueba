@@ -17,6 +17,7 @@ import { Planificador } from '../src/monitor/planificador';
 import { EventosService, firmar } from '../src/notificaciones/eventos.service';
 import { EntradaResumen, ResumenActuacion, Resumidor } from '../src/resumen/resumidor';
 import { sumarDiasHabiles } from '../src/terminos/dias-habiles';
+import { UsuariosService } from '../src/usuarios/usuarios.service';
 
 const LLAVE = 'llave-de-prueba-'.padEnd(40, 'x');
 const SECRETO = 'secreto-de-prueba-'.padEnd(40, 'y');
@@ -147,7 +148,7 @@ describe('Radika API', () => {
   });
 
   beforeEach(async () => {
-    await datos.query('TRUNCATE eventos, actuaciones, tramites, buzones, correos_pendientes, credenciales, accesos_portal');
+    await datos.query('TRUNCATE eventos, actuaciones, tramites, buzones, correos_pendientes, credenciales, accesos_portal, usuarios, sesiones');
     portal.estado = { estado: 'Radicado', detalle: null };
     portal.fallo = null;
     portal.recibidas = [];
@@ -641,6 +642,76 @@ describe('Radika API', () => {
 
     const vacio = await conLlave(api().put(`/v1/tramites/${legalizacion.id}/credencial`)).set('content-type', 'application/json').send('{"usuario":"u","clave":"Secr3ta-del-cliente"').expect(400);
     expect(JSON.stringify(vacio.body)).not.toContain('Secr3ta');
+  });
+
+  test('usuarios: clave temporal, cambio obligatorio, sesion por cookie y permisos', async () => {
+    const app1 = (peticion: request.Test) => peticion.set('x-radika', '1');
+    const servicio = app.get(UsuariosService);
+    const admin = await servicio.crear({ email: 'Admin@Empresa.test', nombre: 'Ana Admin', rol: 'ADMIN' });
+    expect(admin.usuario).toMatchObject({ email: 'admin@empresa.test', debeCambiarClave: true });
+    expect(JSON.stringify(admin.usuario)).not.toContain('huella');
+    await expect(servicio.crear({ email: 'admin@empresa.test', nombre: 'Otra', rol: 'ASESOR' })).rejects.toThrow(/Ya existe/);
+
+    // Ingreso: exige el encabezado de la aplicacion y no revela si el correo existe.
+    await api().post('/v1/sesion').send({ email: 'admin@empresa.test', clave: admin.claveTemporal }).expect(403);
+    const malo = await app1(api().post('/v1/sesion')).send({ email: 'admin@empresa.test', clave: 'equivocada-123' }).expect(401);
+    const inexistente = await app1(api().post('/v1/sesion')).send({ email: 'nadie@empresa.test', clave: 'equivocada-123' }).expect(401);
+    expect(malo.body.error.message).toBe(inexistente.body.error.message);
+    const ingreso = await app1(api().post('/v1/sesion')).send({ email: 'ADMIN@empresa.test', clave: admin.claveTemporal }).expect(200);
+    const cookie = ingreso.headers['set-cookie'][0];
+    expect(cookie).toMatch(/^radika_sesion=[\w-]{40,}; /);
+    expect(cookie).toMatch(/HttpOnly/);
+    expect(cookie).toMatch(/SameSite=Strict/);
+    const sesion = cookie.split(';')[0];
+    const conSesion = (peticion: request.Test) => peticion.set('Cookie', sesion);
+
+    // Con clave temporal solo puede ver su sesion y cambiar la clave.
+    await conSesion(api().get('/v1/tramites')).expect(403);
+    expect((await conSesion(api().get('/v1/sesion')).expect(200)).body.data.usuario.email).toBe('admin@empresa.test');
+    await conSesion(api().put('/v1/sesion/clave')).send({ actual: admin.claveTemporal, nueva: 'Clave-Nueva-2026' }).expect(403);
+    await app1(conSesion(api().put('/v1/sesion/clave'))).send({ actual: admin.claveTemporal, nueva: 'corta' }).expect(400);
+    await app1(conSesion(api().put('/v1/sesion/clave'))).send({ actual: 'no-es-la-actual', nueva: 'Clave-Nueva-2026' }).expect(401);
+    await app1(conSesion(api().put('/v1/sesion/clave'))).send({ actual: admin.claveTemporal, nueva: 'Clave-Nueva-2026' }).expect(200);
+
+    // Ya con clave propia: lee con la cookie, y para cambiar algo necesita ademas el encabezado.
+    await conSesion(api().get('/v1/tramites')).expect(200);
+    await conSesion(api().post('/v1/tramites')).send({ tipo: 'APOSTILLA', radicado: 'AP-77' }).expect(403);
+    await app1(conSesion(api().post('/v1/tramites'))).send({ tipo: 'APOSTILLA', radicado: 'AP-77' }).expect(201);
+
+    // Administracion de usuarios: solo administradores (o la llave de API).
+    const asesora = (await app1(conSesion(api().post('/v1/usuarios'))).send({ email: 'laura@empresa.test', nombre: 'Laura Asesora' }).expect(201)).body.data;
+    expect(asesora).toMatchObject({ usuario: { rol: 'ASESOR' }, claveTemporal: expect.stringMatching(/^.{14}$/) });
+    const ingresoAsesora = await app1(api().post('/v1/sesion')).send({ email: 'laura@empresa.test', clave: asesora.claveTemporal }).expect(200);
+    const sesionAsesora = ingresoAsesora.headers['set-cookie'][0].split(';')[0];
+    await app1(api().put('/v1/sesion/clave')).set('Cookie', sesionAsesora).send({ actual: asesora.claveTemporal, nueva: 'Clave-De-Laura-1' }).expect(200);
+    await api().get('/v1/usuarios').set('Cookie', sesionAsesora).expect(403);
+    expect((await conSesion(api().get('/v1/usuarios')).expect(200)).body.data).toHaveLength(2);
+    expect((await conLlave(api().get('/v1/usuarios')).expect(200)).body.data).toHaveLength(2);
+    expect((await conLlave(api().get('/v1/sesion'))).body.data).toEqual({ usuario: null });
+    await conLlave(api().put('/v1/sesion/clave')).send({ actual: 'x', nueva: 'Clave-Nueva-2026' }).expect(400);
+
+    await app1(conSesion(api().patch(`/v1/usuarios/${admin.usuario.id}`))).send({ activo: false }).expect(400);
+    await app1(conSesion(api().patch(`/v1/usuarios/${asesora.usuario.id}`))).send({}).expect(400);
+    const reinicio = (await app1(conSesion(api().patch(`/v1/usuarios/${asesora.usuario.id}`))).send({ nuevaClave: true, rol: 'ASESOR' }).expect(200)).body.data;
+    expect(reinicio.claveTemporal).toMatch(/^.{14}$/);
+    await api().get('/v1/sesion').set('Cookie', sesionAsesora).expect(401);
+    await app1(conSesion(api().patch(`/v1/usuarios/${asesora.usuario.id}`))).send({ activo: false }).expect(200);
+    await app1(api().post('/v1/sesion')).send({ email: 'laura@empresa.test', clave: reinicio.claveTemporal }).expect(401);
+    await app1(conSesion(api().patch('/v1/usuarios/816d1e22-b94d-46b2-8ce4-a0a5dd000f8f'))).send({ activo: true }).expect(404);
+
+    // Bloqueo tras varios intentos fallidos, sesion vencida y salida.
+    await datos.query(`UPDATE usuarios SET activo = true WHERE email = 'laura@empresa.test'`);
+    for (let intento = 0; intento < 5; intento += 1) {
+      await expect(servicio.ingresar('laura@empresa.test', 'incorrecta')).rejects.toThrow(/incorrectos/);
+    }
+    await expect(servicio.ingresar('laura@empresa.test', reinicio.claveTemporal)).rejects.toThrow(/Demasiados intentos/);
+    await datos.query(`UPDATE sesiones SET expira_at = now() - interval '1 minute'`);
+    await conSesion(api().get('/v1/sesion')).expect(401);
+    const otra = await app1(api().post('/v1/sesion')).send({ email: 'admin@empresa.test', clave: 'Clave-Nueva-2026' }).expect(200);
+    const otraSesion = otra.headers['set-cookie'][0].split(';')[0];
+    await app1(api().delete('/v1/sesion')).set('Cookie', otraSesion).expect(200);
+    await api().get('/v1/sesion').set('Cookie', otraSesion).expect(401);
+    await api().get('/v1/sesion').set('Cookie', 'otra=1; radika_sesion=inventada').expect(401);
   });
 
   test('un cuerpo mal formado responde 400 y no 500', async () => {
