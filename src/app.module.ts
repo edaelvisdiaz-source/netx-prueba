@@ -32,6 +32,7 @@ import { Reclasificar1700000000005 } from './migrations/1700000000005-reclasific
 import { CarpetasBuzon1700000000006 } from './migrations/1700000000006-carpetas-buzon';
 import { EtapaEventos1700000000007 } from './migrations/1700000000007-etapa-eventos';
 import { Documentos1700000000008 } from './migrations/1700000000008-documentos';
+import { Instancias1700000000009 } from './migrations/1700000000009-instancias';
 import { AlmacenConfigurado, AlmacenDocumentos } from './documentos/almacen';
 import { Documento } from './documentos/documento.entity';
 import { DocumentosController } from './documentos/documentos.controller';
@@ -65,7 +66,7 @@ class ConfigModule {}
         type: 'postgres' as const,
         url: env.DATABASE_URL,
         entities: ENTIDADES,
-        migrations: [Inicial1700000000000, Buzon1700000000001, Portales1700000000002, Usuarios1700000000003, Etapas1700000000004, Reclasificar1700000000005, CarpetasBuzon1700000000006, EtapaEventos1700000000007, Documentos1700000000008],
+        migrations: [Inicial1700000000000, Buzon1700000000001, Portales1700000000002, Usuarios1700000000003, Etapas1700000000004, Reclasificar1700000000005, CarpetasBuzon1700000000006, EtapaEventos1700000000007, Documentos1700000000008, Instancias1700000000009],
         migrationsRun: true,
         synchronize: false,
       }),

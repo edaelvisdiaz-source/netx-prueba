@@ -25,6 +25,8 @@ export interface ActuacionParaSituacion {
   readonly titulo: string;
   readonly anotacion: string | null;
   readonly detectadaAt: Date;
+  /** Instancia del proceso de la que viene, si se sabe (0 la primera). */
+  readonly instancia?: number | null;
 }
 
 export interface DatosSituacion {
@@ -119,7 +121,13 @@ function enOrden(actuaciones: ReadonlyArray<ActuacionParaSituacion>): ActuacionP
   return [...actuaciones].sort((a, b) => a.fecha.localeCompare(b.fecha) || a.detectadaAt.getTime() - b.detectadaAt.getTime());
 }
 
+const FALLOS_DE_PRIMERA: ReadonlySet<Etapa> = new Set(['FALLO_FAVORABLE', 'FALLO_DESFAVORABLE', 'CARENCIA_OBJETO', 'FALLO_SIN_CLASIFICAR']);
+
 function siguienteEtapa(actual: Etapa, actuacion: ActuacionParaSituacion): Etapa {
+  const enInstanciaSuperior = (actuacion.instancia ?? 0) > 0;
+  // Que el proceso aparezca ante el superior ya dice que el fallo fue impugnado, aunque el juzgado no lo haya anotado.
+  if (enInstanciaSuperior && FALLOS_DE_PRIMERA.has(actual) && actuacion.categoria !== 'FALLO') return 'IMPUGNADA';
+  if (enInstanciaSuperior && actuacion.categoria === 'FALLO') return 'FALLO_SEGUNDA_INSTANCIA';
   switch (actuacion.categoria) {
     case 'ADMISION': return actual === 'RADICADA' || actual === 'REQUERIMIENTO' ? 'ADMITIDA' : actual;
     case 'REQUERIMIENTO': return actual === 'RADICADA' ? 'REQUERIMIENTO' : actual;

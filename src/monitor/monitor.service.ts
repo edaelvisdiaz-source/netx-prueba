@@ -3,7 +3,7 @@ import { InjectDataSource, InjectRepository } from '@nestjs/typeorm';
 import { DataSource, In, IsNull, Not, Repository } from 'typeorm';
 import { BovedaService, CredencialIlegibleError } from '../boveda/boveda.service';
 import { ENV, Env } from '../config/env';
-import { ActuacionFuente, FuenteError } from '../fuentes/fuente';
+import { ActuacionFuente, Fuente, FuenteError, ProcesoFuente } from '../fuentes/fuente';
 import { EstadoPortal, FuentePortal, PortalError } from '../fuentes/fuente-portal';
 import { FuentesRegistry } from '../fuentes/fuentes.registry';
 import { EventosService } from '../notificaciones/eventos.service';
@@ -15,6 +15,7 @@ import { Actuacion } from '../tramites/actuacion.entity';
 import { esRemitenteConfiable, extraerPistas, PistasRadicado, tituloDesdeAsunto } from '../correo/analizar-correo';
 import { CorreoEntrante, RegistrarActuacion } from '../tramites/dto';
 import { clasificarActuacion } from '../tramites/clasificacion';
+import { convieneBuscarInstancia, instanciaDe, normalizarRadicadoJudicial, procesoDe, radicadoDeInstancia } from '../tramites/radicado';
 import { calcularSituacion } from '../tramites/situacion';
 import { Tramite } from '../tramites/tramite.entity';
 import { TramitesService } from '../tramites/tramites.service';
@@ -40,7 +41,8 @@ const MENSAJES_PORTAL: Readonly<Record<CodigoPortal, string>> = {
   CREDENCIAL_ILEGIBLE: 'No se pudo leer la credencial guardada; registrala de nuevo',
 };
 
-type ActuacionEncontrada = ActuacionFuente & { readonly despacho: string | null };
+type ActuacionEncontrada = ActuacionFuente & { readonly despacho: string | null; readonly instancia?: number };
+type ProcesoDeInstancia = ProcesoFuente & { readonly instancia: number };
 
 export type ResultadoCorreo =
   | { readonly vinculado: true; readonly tramiteId: string; readonly duplicado: boolean; readonly actuacionId?: string }
@@ -127,6 +129,25 @@ export class MonitorService {
     });
   }
 
+  /**
+   * Un proceso judicial tiene un radicado por instancia (terminados en 00, 01...). Se buscan todas
+   * para llevar el caso completo en un solo tramite, sin importar cual se registro.
+   */
+  private async buscarInstancias(fuente: Fuente, radicado: string): Promise<ProcesoDeInstancia[]> {
+    if (normalizarRadicadoJudicial(radicado) === null) {
+      return (await fuente.buscarProcesos(radicado)).map((proceso) => ({ ...proceso, instancia: 0 }));
+    }
+    const registrada = instanciaDe(radicado);
+    const hallados: ProcesoDeInstancia[] = [];
+    let anteriorExiste = false;
+    for (let numero = 0; convieneBuscarInstancia(numero, registrada, anteriorExiste); numero += 1) {
+      const procesos = await fuente.buscarProcesos(radicadoDeInstancia(radicado, numero));
+      anteriorExiste = procesos.length > 0;
+      hallados.push(...procesos.map((proceso) => ({ ...proceso, instancia: numero })));
+    }
+    return hallados;
+  }
+
   private async consultar(tramiteId: string): Promise<ResultadoRevision> {
     const tramite = await this.tramitesService.obtener(tramiteId);
     if (tramite.fuente === 'MANUAL') {
@@ -136,7 +157,7 @@ export class MonitorService {
     const primera = tramite.sincronizadoAt === null;
     if (fuente instanceof FuentePortal) return this.revisarPortal(tramite, fuente, primera);
     try {
-      const todos = await fuente.buscarProcesos(tramite.radicado);
+      const todos = await this.buscarInstancias(fuente, tramite.radicado);
       const procesos = todos.filter((proceso) => !proceso.privado).slice(0, MAX_PROCESOS_POR_RADICADO);
       const encontradas: ActuacionEncontrada[] = [];
       for (const proceso of procesos) {
@@ -146,6 +167,7 @@ export class MonitorService {
             ...actuacion,
             clave: `${proceso.idFuente}:${actuacion.clave}`,
             despacho: proceso.despacho,
+            instancia: proceso.instancia,
           })),
         );
       }
@@ -228,11 +250,13 @@ export class MonitorService {
 
   private async buscarPorPistas(pistas: PistasRadicado): Promise<Tramite | 'AMBIGUO' | 'SIN_RADICADO' | 'SIN_TRAMITE'> {
     if (pistas.completos.length + pistas.prefijos.length + pistas.anoConsecutivo.length === 0) return 'SIN_RADICADO';
+    const prefijos = [...new Set([...pistas.prefijos, ...pistas.completos.map(procesoDe)])];
     const busquedas: Array<() => Promise<Tramite[]>> = [
       () => (pistas.completos.length ? this.tramites.findBy({ radicado: In([...pistas.completos]) }) : Promise.resolve([])),
+      // Tambien los completos sin su numero de instancia: el correo de la segunda instancia pertenece al mismo caso.
       () =>
-        pistas.prefijos.length
-          ? this.tramites.createQueryBuilder('t').where('left(t.radicado, 21) IN (:...prefijos)', { prefijos: pistas.prefijos }).getMany()
+        prefijos.length
+          ? this.tramites.createQueryBuilder('t').where(`t.fuente = 'RAMA_JUDICIAL_CPNU' AND left(t.radicado, 21) IN (:...prefijos)`, { prefijos }).getMany()
           : Promise.resolve([]),
       () =>
         pistas.anoConsecutivo.length
@@ -490,6 +514,7 @@ export class MonitorService {
               fechaInicioTermino: actuacion.fechaInicioTermino,
               fechaFinTermino: actuacion.fechaFinTermino,
               fechaRegistro: actuacion.fechaRegistro,
+              instancia: actuacion.instancia ?? null,
               categoria: clasificarActuacion(actuacion.titulo, actuacion.anotacion),
               resumen: resumenes.get(actuacion.clave) ?? null,
             })),

@@ -7,7 +7,7 @@ import { Actuacion } from './actuacion.entity';
 import { ActualizarTramite, CrearTramite, ListarTramites } from './dto';
 import { EnlaceConsulta, enlacesDeConsulta } from './enlaces';
 import { Alerta, calcularSituacion, Etapa, Nivel, Situacion } from './situacion';
-import { normalizarRadicadoJudicial, normalizarRadicadoLibre } from './radicado';
+import { normalizarRadicadoJudicial, normalizarRadicadoLibre, procesoDe, radicadoDeInstancia } from './radicado';
 import { esFuentePortal, esTipoJudicial, fuentePorDefecto, portalDe } from './tipos';
 import { Tramite } from './tramite.entity';
 
@@ -47,6 +47,23 @@ export interface DetalleTramite {
   readonly actuaciones: ReadonlyArray<Actuacion>;
   readonly terminos: ReadonlyArray<Termino>;
   readonly enlacesConsulta: ReadonlyArray<EnlaceConsulta>;
+  /** Instancias del proceso que Radika encontro, con el despacho de cada una. */
+  readonly instancias: ReadonlyArray<Instancia>;
+}
+
+export interface Instancia {
+  readonly numero: number;
+  readonly radicado: string;
+  readonly despacho: string | null;
+  readonly actuaciones: number;
+}
+
+function agruparInstancias(radicado: string, actuaciones: ReadonlyArray<Actuacion>): Instancia[] {
+  const numeros = [...new Set(actuaciones.map((actuacion) => actuacion.instancia).filter((numero): numero is number => numero !== null))].sort((a, b) => a - b);
+  return numeros.map((numero) => {
+    const propias = actuaciones.filter((actuacion) => actuacion.instancia === numero);
+    return { numero, radicado: radicadoDeInstancia(radicado, numero), despacho: propias.find((actuacion) => actuacion.despacho)?.despacho ?? null, actuaciones: propias.length };
+  });
 }
 
 @Injectable()
@@ -72,6 +89,14 @@ export class TramitesService {
       throw new BadRequestException(
         esJudicial ? 'El radicado judicial debe tener 23 digitos' : 'El radicado tiene caracteres no permitidos',
       );
+    }
+    if (esJudicial) {
+      // Las instancias de un proceso se llevan en un solo tramite.
+      const hermano = await this.tramites
+        .createQueryBuilder('t')
+        .where(`t.fuente = 'RAMA_JUDICIAL_CPNU' AND left(t.radicado, 21) = :proceso AND t.radicado <> :radicado`, { proceso: procesoDe(radicado), radicado })
+        .getOne();
+      if (hermano) throw new ConflictException(`Ese proceso ya esta registrado con el radicado ${hermano.radicado}; sus otras instancias se ven ahi mismo`);
     }
     try {
       return await this.tramites.save(
@@ -180,7 +205,8 @@ export class TramitesService {
       order: { fecha: 'DESC', detectadaAt: 'DESC' },
     });
     const { terminos, ...situacion } = calcularSituacion({ ...tramite, actuaciones, hoy: hoyEnColombia() });
-    return { tramite, situacion, actuaciones, terminos, enlacesConsulta: enlacesDeConsulta(tramite.tipo, tramite.radicado) };
+    const instancias = tramite.fuente === 'RAMA_JUDICIAL_CPNU' ? agruparInstancias(tramite.radicado, actuaciones) : [];
+    return { tramite, situacion, actuaciones, terminos, enlacesConsulta: enlacesDeConsulta(tramite.tipo, tramite.radicado), instancias };
   }
 
   async actualizar(id: string, cambios: ActualizarTramite): Promise<Tramite> {

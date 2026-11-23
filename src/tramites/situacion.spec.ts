@@ -59,6 +59,16 @@ describe('etapaAutomatica', () => {
     expect(etapaAutomatica('2026-11-10', [act('2026-11-10', 'ADMISION'), act('2026-11-12', 'REQUERIMIENTO')])).toBe('ADMITIDA');
   });
 
+  test('con las dos instancias juntas: impugnada al llegar al superior y fallo de segunda cuando decide', () => {
+    const primera = [act('2026-05-13', 'ADMISION'), act('2026-05-26', 'FALLO', 'Sentencia', 'CONCEDE')];
+    const enTribunal = { ...act('2026-06-01', 'OTRA', 'Reparto y Radicación'), instancia: 1 };
+    const falloTribunal = { ...act('2026-07-01', 'FALLO', 'FALLO TUTELA SEGUNDA INSTANCIA', 'SE NIEGA LA PROTECCION'), instancia: 1 };
+    expect(etapaAutomatica('2026-05-13', [...primera, enTribunal])).toBe('IMPUGNADA');
+    expect(etapaAutomatica('2026-05-13', [...primera, enTribunal, falloTribunal])).toBe('FALLO_SEGUNDA_INSTANCIA');
+    const enCorte = { ...act('2026-08-19', 'REMISION_CORTE', 'Envio Corte Constitucional'), instancia: 1 };
+    expect(etapaAutomatica('2026-05-13', [...primera, enTribunal, falloTribunal, enCorte])).toBe('EN_CORTE');
+  });
+
   test('desacato y remision a la Corte', () => {
     expect(etapaAutomatica('2026-11-10', [act('2026-11-19', 'FALLO', 'Sentencia', 'CONCEDE'), act('2026-12-01', 'DESACATO')])).toBe('DESACATO');
     expect(etapaAutomatica('2026-11-10', [act('2026-11-19', 'FALLO', 'Sentencia', 'CONCEDE'), act('2026-12-01', 'REMISION_CORTE')])).toBe('EN_CORTE');

@@ -28,6 +28,8 @@ const SENTIDOS = {
   A_FAVOR: ['Fallo a favor', 'ok'], EN_CONTRA: ['Fallo en contra', 'mal'], PARCIAL: ['Fallo parcial', 'aviso-c'], CARENCIA_DE_OBJETO: ['Carencia de objeto', 'aviso-c'],
   SIN_FALLO: ['Aún sin fallo', 'info'], NO_SE_PUEDE_SABER: ['Sentido del fallo sin confirmar', 'aviso-c'],
 };
+const INSTANCIAS = ['Primera instancia', 'Segunda instancia', 'Tercera instancia', 'Cuarta instancia'];
+const nombreInstancia = (numero) => INSTANCIAS[numero] || `Instancia ${numero + 1}`;
 const ORIGENES = { CORREO: 'Llegó por correo', MANUAL: 'Subido a mano' };
 const TIPOS_ARCHIVO = 'application/pdf,image/png,image/jpeg';
 const NIVELES = { URGENTE: ['Urgente', 'mal'], PRONTO: ['Pronto', 'aviso-c'], INFO: ['Para revisar', 'info'] };
@@ -445,6 +447,25 @@ async function pantallaDetalle(id) {
             });
           } }, h('label', { class: 'oculto', for: 'archivo-documento' }, 'Archivo'), Object.assign(archivo, { id: 'archivo-documento' }), botonSubir)]);
 
+    const variasInstancias = d.instancias.length > 1;
+    const pintarActuacion = (a) => h('div', { class: 'linea' }, h('div', { class: 'fecha' }, fecha(a.fecha), a.despacho ? ` · ${a.despacho}` : ''),
+            h('div', { class: 'titulo' }, a.titulo, ' ', chip(...(CATEGORIAS[a.categoria] || CATEGORIAS.OTRA)), variasInstancias && a.instancia !== null ? [' ', chip(nombreInstancia(a.instancia), 'info')] : null),
+            a.anotacion ? h('div', { class: 'tenue' }, a.anotacion) : null,
+            a.resumen ? h('div', { class: 'resumen' }, h('div', {}, a.resumen.resumen), h('div', { class: 'tenue' }, `Qué hacer: ${a.resumen.accionSugerida}`)) : null,
+            deActuacion(a.id).map(fichaDocumento), adjuntarA(a));
+    const listaActuaciones = h('div');
+    const elegirInstancia = h('select', { 'aria-label': 'Instancia' },
+      h('option', { value: '' }, `Todas las instancias · ${d.actuaciones.length} act.`),
+      d.instancias.map((i) => h('option', { value: String(i.numero) }, `${nombreInstancia(i.numero)} · ${i.despacho || i.radicado} · ${i.actuaciones} act.`)));
+    const pintarLista = () => {
+      const elegidas = elegirInstancia.value === '' ? d.actuaciones : d.actuaciones.filter((a) => String(a.instancia) === elegirInstancia.value);
+      poner(listaActuaciones, elegidas.length === 0 ? h('p', { class: 'vacio' }, t.fuente === 'MANUAL' ? 'Aún no hay actuaciones. Registra la primera abajo.' : 'Aún no hay actuaciones. Si el trámite es reciente, la fuente puede tardar unos días en mostrarlo.') : elegidas.map(pintarActuacion));
+    };
+    elegirInstancia.addEventListener('change', pintarLista);
+    pintarLista();
+    const tarjetaActuaciones = h('div', { class: 'tarjeta' }, h('div', { class: 'fila entre' }, h('h2', {}, `Actuaciones (${d.actuaciones.length})`), variasInstancias ? chip(`${d.instancias.length} instancias`, 'info') : null),
+      variasInstancias ? h('div', { class: 'campo' }, elegirInstancia) : null, listaActuaciones);
+
     const botonDatos = h('button', { type: 'submit', class: 'secundario' }, 'Guardar');
     const mensajeDatos = h('div');
     const accion = (texto, clase, hacer) => {
@@ -461,7 +482,7 @@ async function pantallaDetalle(id) {
     poner(contenedor,
       h('p', {}, h('a', { href: '#/tramites' }, '← Trámites')),
       h('div', { class: 'fila entre' }, h('div', {}, h('h1', {}, nombreDe(t, s)), h('div', { class: 'tenue' }, `${TIPOS[t.tipo] || t.tipo} · `, h('span', { class: 'mono' }, t.radicado))),
-        h('span', { class: 'fila' }, chipEtapa(s), chip(ESTADOS[t.estado], t.estado === 'ACTIVO' ? 'ok' : ''))),
+        h('span', { class: 'fila' }, d.instancias.length > 1 ? chip(`${d.instancias.length} instancias`, 'info') : null, chipEtapa(s), chip(ESTADOS[t.estado], t.estado === 'ACTIVO' ? 'ok' : ''))),
       t.ultimoError ? aviso(`Última revisión: ${t.ultimoError}`, 'mal') : null,
       mensaje,
       h('div', { class: 'tarjeta' }, h('h2', {}, 'En qué va'),
@@ -498,13 +519,7 @@ async function pantallaDetalle(id) {
         h('div', {}, termino.descripcion, h('div', { class: 'tenue' }, `Límite: ${fecha(termino.fechaLimite)} · ${termino.diasHabilesRestantes >= 0 ? `faltan ${termino.diasHabilesRestantes} día(s) hábil(es)` : `venció hace ${-termino.diasHabilesRestantes} día(s) hábil(es)`}`)),
         chip(...TERMINOS[termino.estado])))) : null,
       d.enlacesConsulta.length ? h('div', { class: 'tarjeta' }, h('h2', {}, 'Consultar en la fuente oficial'), d.enlacesConsulta.map((enlace) => h('p', {}, h('a', { href: enlace.url, target: '_blank', rel: 'noopener noreferrer' }, enlace.nombre), h('span', { class: 'tenue' }, ` — ${enlace.nota}`)))) : null,
-      h('div', { class: 'tarjeta' }, h('h2', {}, `Actuaciones (${d.actuaciones.length})`),
-        d.actuaciones.length === 0 ? h('p', { class: 'vacio' }, t.fuente === 'MANUAL' ? 'Aún no hay actuaciones. Registra la primera abajo.' : 'Aún no hay actuaciones. Si el trámite es reciente, la fuente puede tardar unos días en mostrarlo.')
-          : d.actuaciones.map((a) => h('div', { class: 'linea' }, h('div', { class: 'fecha' }, fecha(a.fecha), a.despacho ? ` · ${a.despacho}` : ''),
-            h('div', { class: 'titulo' }, a.titulo, ' ', chip(...(CATEGORIAS[a.categoria] || CATEGORIAS.OTRA))),
-            a.anotacion ? h('div', { class: 'tenue' }, a.anotacion) : null,
-            a.resumen ? h('div', { class: 'resumen' }, h('div', {}, a.resumen.resumen), h('div', { class: 'tenue' }, `Qué hacer: ${a.resumen.accionSugerida}`)) : null,
-            deActuacion(a.id).map(fichaDocumento), adjuntarA(a)))),
+      tarjetaActuaciones,
       h('div', { class: 'tarjeta' }, h('h2', {}, 'Registrar una actuación a mano'), h('form', {
         onsubmit: (evento) => {
           evento.preventDefault();

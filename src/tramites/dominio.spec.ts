@@ -1,5 +1,5 @@
 import { clasificarActuacion } from './clasificacion';
-import { normalizarRadicadoJudicial, normalizarRadicadoLibre } from './radicado';
+import { convieneBuscarInstancia, instanciaDe, normalizarRadicadoJudicial, normalizarRadicadoLibre, procesoDe, radicadoDeInstancia } from './radicado';
 import { esFuentePortal, esTipoJudicial, fuentePorDefecto, portalDe } from './tipos';
 
 describe('radicado', () => {
@@ -33,6 +33,25 @@ describe('clasificacion con titulos reales de los despachos', () => {
     ['Tramites de Secretaria', 'NOTIFICACION FALLO.-', 'OTRA'],
   ])('%s / %s -> %s', (titulo, anotacion, esperado) => {
     expect(clasificarActuacion(titulo, anotacion)).toBe(esperado);
+  });
+});
+
+describe('instancias de un proceso', () => {
+  test('los dos ultimos digitos numeran la instancia', () => {
+    expect(instanciaDe('11001311001120260036900')).toBe(0);
+    expect(instanciaDe('11001311001120260036901')).toBe(1);
+    expect(procesoDe('11001311001120260036901')).toBe('110013110011202600369');
+    expect(radicadoDeInstancia('11001311001120260036901', 0)).toBe('11001311001120260036900');
+    expect(radicadoDeInstancia('11001311001120260036900', 2)).toBe('11001311001120260036902');
+  });
+
+  test('busca siempre primera y segunda; las demas solo si la anterior existe', () => {
+    expect(convieneBuscarInstancia(0, 0, false)).toBe(true);
+    expect(convieneBuscarInstancia(1, 0, false)).toBe(true);
+    expect(convieneBuscarInstancia(2, 0, false)).toBe(false);
+    expect(convieneBuscarInstancia(2, 0, true)).toBe(true);
+    expect(convieneBuscarInstancia(2, 2, false)).toBe(true);
+    expect(convieneBuscarInstancia(4, 0, true)).toBe(false);
   });
 });
 

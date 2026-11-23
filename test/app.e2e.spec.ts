@@ -30,14 +30,20 @@ class FuenteFalsa extends Fuente {
   procesos: ProcesoFuente[] = [];
   actuaciones: ActuacionFuente[] = [];
   fallo: FuenteError | null = null;
+  /** Procesos de otras instancias, por radicado completo, y sus actuaciones por id de proceso. */
+  otrasInstancias: Record<string, ProcesoFuente[]> = {};
+  actuacionesPorProceso: Record<string, ActuacionFuente[]> = {};
+  consultados: string[] = [];
 
-  async buscarProcesos(): Promise<ProcesoFuente[]> {
+  async buscarProcesos(radicado: string): Promise<ProcesoFuente[]> {
+    this.consultados.push(radicado);
     if (this.fallo) throw this.fallo;
-    return this.procesos;
+    // Por defecto el proceso solo existe en primera instancia.
+    return this.otrasInstancias[radicado] ?? (radicado.endsWith('00') ? this.procesos : []);
   }
 
-  async listarActuaciones(): Promise<ActuacionFuente[]> {
-    return this.actuaciones;
+  async listarActuaciones(idFuente: string): Promise<ActuacionFuente[]> {
+    return this.actuacionesPorProceso[idFuente] ?? this.actuaciones;
   }
 }
 
@@ -226,6 +232,7 @@ describe('Radika API', () => {
     fuente.procesos = [];
     fuente.actuaciones = [];
     fuente.fallo = null;
+    Object.assign(fuente, { otrasInstancias: {}, actuacionesPorProceso: {}, consultados: [] });
     resumidor.activo = false;
     resumidor.pedidos = [];
     recibidos.length = 0;
@@ -364,8 +371,8 @@ describe('Radika API', () => {
 
   test('la revision automatica toma solo los tramites activos que ya tocan', async () => {
     const activa = await crearTutela();
-    const pausada = await crearTutela('11001310300120260012301');
-    const futura = await crearTutela('11001310300120260012302');
+    const pausada = await crearTutela('11001310300120260012400');
+    const futura = await crearTutela('11001310300120260012500');
     await conLlave(api().patch(`/v1/tramites/${pausada.id}`)).send({ estado: 'PAUSADO' }).expect(200);
     await datos.query(`UPDATE tramites SET proxima_revision_at = now() + interval '1 day' WHERE id = $1`, [futura.id]);
     await conLlave(api().post('/v1/tramites')).send({ tipo: 'APOSTILLA', radicado: 'AP-9' }).expect(201);
@@ -404,7 +411,7 @@ describe('Radika API', () => {
 
   test('lista con filtros y paginas, actualiza y elimina', async () => {
     const primera = await crearTutela();
-    await crearTutela('11001310300120260012301');
+    await crearTutela('11001310300120260012400');
     await conLlave(api().post('/v1/tramites')).send({ tipo: 'APOSTILLA', radicado: 'AP-1', referenciaCrm: 'K28PL4MX' }).expect(201);
 
     const pagina = (await conLlave(api().get('/v1/tramites?tipo=TUTELA&limit=1&page=2')).expect(200)).body;
@@ -455,7 +462,7 @@ describe('Radika API', () => {
     expect(entregas[0] + entregas[1]).toBe(1);
     expect(recibidos).toHaveLength(1);
 
-    const reservada = await crearTutela('11001310300120260012305');
+    const reservada = await crearTutela('11001310300120260012600');
     fuente.procesos = [{ ...proceso('2026-11-03'), privado: true }];
     await monitor.revisar(reservada.id);
     const detalle = (await conLlave(api().get(`/v1/tramites/${reservada.id}`))).body.data.tramite;
@@ -1027,6 +1034,60 @@ describe('Radika API', () => {
     resumidorDeCasos.activo = false;
     expect((await conLlave(api().post(`/v1/tramites/${tutela.id}/resumen`)).expect(503)).body.error.message).toContain('no esta configurado');
     expect((await conLlave(api().get(`/v1/tramites/${tutela.id}`))).body.data.funciones.resumenIa).toBe(false);
+  });
+
+  test('lleva las instancias de un proceso en un solo tramite', async () => {
+    const primera = '11001311001120260036900';
+    const segunda = '11001311001120260036901';
+    fuente.procesos = [{ ...proceso('2026-05-13'), idFuente: '10', despacho: 'JUZGADO 011 DE FAMILIA' }];
+    fuente.actuacionesPorProceso = { 10: [actuacion('1', '2026-05-13', 'Auto admite tutela'), { ...actuacion('2', '2026-05-26', 'Sentencia tutela primera instancia'), anotacion: 'CONCEDE AMPARO' }] };
+    const tutela = await crearTutela(primera);
+    const revisar = () => app.get(MonitorService).revisar(tutela.id);
+    expect(await revisar()).toMatchObject({ encontrado: true, actuacionesNuevas: 2 });
+    // Se busca la primera y la segunda; la tercera no, porque la segunda aun no existe.
+    expect(fuente.consultados).toEqual([primera, segunda]);
+    let detalle = (await conLlave(api().get(`/v1/tramites/${tutela.id}`)).expect(200)).body.data;
+    expect(detalle.instancias).toEqual([{ numero: 0, radicado: primera, despacho: 'JUZGADO 011 DE FAMILIA', actuaciones: 2 }]);
+    expect(detalle.situacion.etapa).toBe('FALLO_FAVORABLE');
+
+    // El fallo se impugna: el proceso aparece ante el Tribunal con el radicado terminado en 01.
+    fuente.otrasInstancias = { [segunda]: [{ ...proceso('2026-06-01'), idFuente: '20', despacho: 'SALA DE FAMILIA DEL TRIBUNAL' }] };
+    fuente.actuacionesPorProceso = { ...fuente.actuacionesPorProceso, 20: [actuacion('1', '2026-06-01', 'Reparto y Radicación')] };
+    fuente.consultados = [];
+    expect(await revisar()).toMatchObject({ actuacionesNuevas: 1 });
+    expect(fuente.consultados).toEqual([primera, segunda, '11001311001120260036902']);
+    expect((await conLlave(api().get(`/v1/tramites/${tutela.id}`))).body.data.situacion.etapa).toBe('IMPUGNADA');
+
+    fuente.actuacionesPorProceso[20] = [...fuente.actuacionesPorProceso[20], { ...actuacion('2', '2026-07-01', 'FALLO TUTELA SEGUNDA INSTANCIA'), anotacion: 'REVOCAR. SE NIEGA LA PROTECCION' }];
+    await revisar();
+    detalle = (await conLlave(api().get(`/v1/tramites/${tutela.id}`)).expect(200)).body.data;
+    expect(detalle.instancias).toEqual([
+      { numero: 0, radicado: primera, despacho: 'JUZGADO 011 DE FAMILIA', actuaciones: 2 },
+      { numero: 1, radicado: segunda, despacho: 'SALA DE FAMILIA DEL TRIBUNAL', actuaciones: 2 },
+    ]);
+    expect(detalle.situacion.etapa).toBe('FALLO_SEGUNDA_INSTANCIA');
+    expect(detalle.tramite.despacho).toBe('JUZGADO 011 DE FAMILIA | SALA DE FAMILIA DEL TRIBUNAL');
+    expect(detalle.actuaciones.map((item: { instancia: number }) => item.instancia)).toEqual([1, 1, 0, 0]);
+
+    // La otra instancia no se registra aparte, y un correo que cita su radicado llega a este tramite.
+    const repetido = await conLlave(api().post('/v1/tramites')).send({ tipo: 'TUTELA', radicado: segunda }).expect(409);
+    expect(repetido.body.error.message).toContain(primera);
+    const correo = await conLlave(api().post('/v1/correos')).send({
+      messageId: '<tribunal@correo.test>', from: 'sfamtsbta@cendoj.ramajudicial.gov.co', subject: `NOTIFICA FALLO SEGUNDA INSTANCIA ${segunda}`, date: '2026-07-02T15:00:00Z',
+    }).expect(200);
+    expect(correo.body.data).toMatchObject({ vinculado: true, tramiteId: tutela.id });
+  });
+
+  test('quien registro la segunda instancia tambien ve la primera', async () => {
+    const segunda = '11001310301420260048201';
+    fuente.procesos = [{ ...proceso('2026-10-01'), idFuente: '30', despacho: 'JUZGADO 014 CIVIL' }];
+    fuente.otrasInstancias = { [segunda]: [{ ...proceso('2026-10-14'), idFuente: '40', despacho: 'SALA CIVIL DEL TRIBUNAL' }] };
+    fuente.actuacionesPorProceso = { 30: [actuacion('1', '2026-10-02', 'Auto admite tutela')], 40: [actuacion('1', '2026-10-21', 'Revoca Tutela')] };
+    const tutela = await crearTutela(segunda);
+    await app.get(MonitorService).revisar(tutela.id);
+    const detalle = (await conLlave(api().get(`/v1/tramites/${tutela.id}`)).expect(200)).body.data;
+    expect(detalle.instancias.map((instancia: { numero: number; actuaciones: number }) => [instancia.numero, instancia.actuaciones])).toEqual([[0, 1], [1, 1]]);
+    expect(detalle.tramite).toMatchObject({ fechaRadicacion: '2026-10-01', despacho: 'JUZGADO 014 CIVIL | SALA CIVIL DEL TRIBUNAL' });
   });
 
   test('un cuerpo mal formado responde 400 y no 500', async () => {

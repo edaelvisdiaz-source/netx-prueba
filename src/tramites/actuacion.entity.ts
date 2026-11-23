@@ -9,6 +9,8 @@ export class Actuacion {
   @Column({ name: 'tramite_id', type: 'uuid' }) tramiteId!: string;
   @Column({ name: 'clave_fuente', type: 'text' }) claveFuente!: string;
   @Column({ type: 'text', nullable: true }) despacho!: string | null;
+  /** Instancia del proceso de la que viene (0 primera, 1 segunda...). Vacia si no viene de la consulta judicial. */
+  @Column({ type: 'smallint', nullable: true }) instancia!: number | null;
   @Column({ type: 'date' }) fecha!: string;
   @Column({ type: 'text' }) titulo!: string;
   @Column({ type: 'text', nullable: true }) anotacion!: string | null;
