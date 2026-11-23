@@ -16,6 +16,11 @@ describe('leerPartes', () => {
     expect(leerPartes(base.sujetos)).toEqual({ tutelante: 'Veronica Andrea Murillo Avendaño', accionado: 'Ministerio de Educacion Nacional' });
   });
 
+  test('omite el numero de solicitud de la tutela en linea', () => {
+    expect(leerPartes('Demandante: TUT4481164 | Demandante: UBALDO ENRIQUE BELTRAN | Demandado: MINISTERIO DE EDUCACION NACIONAL').tutelante).toBe('Ubaldo Enrique Beltran');
+    expect(leerPartes('Demandante: Tut 4481164 | Demandado: MEN')).toEqual({ tutelante: null, accionado: 'Men' });
+  });
+
   test('sin sujetos no inventa nombres', () => {
     expect(leerPartes(null)).toEqual({ tutelante: null, accionado: null });
     expect(leerPartes('texto sin formato')).toEqual({ tutelante: null, accionado: null });

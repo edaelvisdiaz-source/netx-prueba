@@ -64,6 +64,7 @@ export interface Situacion {
   readonly terminos: ReadonlyArray<Termino>;
 }
 
+const NUMERO_DE_SOLICITUD = /^TUT\s?\d+$/i;
 const ROL_TUTELANTE = /DEMANDANTE|ACCIONANTE|TUTELANTE/;
 const ROL_ACCIONADO = /DEMANDADO|ACCIONADO/;
 const PALABRAS_MENORES: ReadonlySet<string> = new Set(['de', 'del', 'la', 'las', 'los', 'y', 'e']);
@@ -91,7 +92,8 @@ export function leerPartes(sujetos: string | null): { tutelante: string | null; 
     .map((parte) => parte.split(':'))
     .filter((trozos) => trozos.length >= 2)
     .map(([rol, ...resto]) => ({ rol: sinTildes(rol), nombre: resto.join(':').trim() }))
-    .filter((par) => par.nombre.length > 0);
+    // En las tutelas en linea el despacho anota el numero de solicitud ("TUT4481164") como si fuera una parte.
+    .filter((par) => par.nombre.length > 0 && !NUMERO_DE_SOLICITUD.test(par.nombre));
   const unir = (patron: RegExp) => pares.filter((par) => patron.test(par.rol)).map((par) => nombreLegible(par.nombre)).join(', ') || null;
   return { tutelante: unir(ROL_TUTELANTE), accionado: unir(ROL_ACCIONADO) };
 }
