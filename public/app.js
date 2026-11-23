@@ -24,6 +24,12 @@ const ETAPAS = {
   FALLO_SIN_CLASIFICAR: ['Fallo por revisar', 'aviso-c'], FALLO_SEGUNDA_INSTANCIA: ['Fallo 2.ª instancia', 'aviso-c'], REMITIDA_OTRO_DESPACHO: ['Remitida a otro despacho', 'aviso-c'], IMPUGNADA: ['Impugnada', 'aviso-c'], DESACATO: ['Desacato', 'mal'], EN_CORTE: ['En la Corte', ''],
   CUMPLIDA: ['Cumplida', 'ok'],
 };
+const SENTIDOS = {
+  A_FAVOR: ['Fallo a favor', 'ok'], EN_CONTRA: ['Fallo en contra', 'mal'], PARCIAL: ['Fallo parcial', 'aviso-c'], CARENCIA_DE_OBJETO: ['Carencia de objeto', 'aviso-c'],
+  SIN_FALLO: ['Aún sin fallo', 'info'], NO_SE_PUEDE_SABER: ['Sentido del fallo sin confirmar', 'aviso-c'],
+};
+const ORIGENES = { CORREO: 'Llegó por correo', MANUAL: 'Subido a mano' };
+const TIPOS_ARCHIVO = 'application/pdf,image/png,image/jpeg';
 const NIVELES = { URGENTE: ['Urgente', 'mal'], PRONTO: ['Pronto', 'aviso-c'], INFO: ['Para revisar', 'info'] };
 const TRAMITES_POR_PAGINA = 50;
 const ESPERA_BUSQUEDA_MS = 350;
@@ -78,6 +84,44 @@ async function api(metodo, ruta, cuerpo) {
     throw new ErrorApi([error.message || 'No se pudo completar la acción', detalle].filter(Boolean).join(' — '), respuesta.status, error.details);
   }
   return datos;
+}
+
+/** Sube un archivo tal cual (no JSON). El nombre viaja codificado en un encabezado. */
+async function subirArchivo(ruta, archivo) {
+  let respuesta;
+  try {
+    respuesta = await fetch(ruta, {
+      method: 'POST', credentials: 'same-origin', body: archivo,
+      headers: { 'X-Radika': '1', 'Content-Type': archivo.type || 'application/octet-stream', 'X-Nombre-Archivo': encodeURIComponent(archivo.name) },
+    });
+  } catch {
+    throw new ErrorApi('No hay conexión con Radika. Revisa tu internet e intenta de nuevo.', 0);
+  }
+  const datos = await respuesta.json().catch(() => null);
+  if (respuesta.status === 413) throw new ErrorApi('El archivo supera los 15 MB', 413);
+  if (!respuesta.ok || !datos || datos.success === false) throw new ErrorApi((datos && datos.error && datos.error.message) || 'No se pudo subir el archivo', respuesta.status);
+  return datos;
+}
+
+const tamano = (bytes) => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
+
+/** Visor: muestra el documento sobre la pantalla sin salir del caso. En pantallas pequeñas se abre en otra pestaña. */
+function abrirVisor(documento) {
+  const ruta = `/v1/documentos/${documento.id}/contenido`;
+  if (window.matchMedia('(max-width: 640px)').matches) return window.open(ruta, '_blank', 'noopener');
+  const anterior = document.activeElement;
+  const cerrar = h('button', { type: 'button', class: 'secundario' }, 'Cerrar');
+  const lienzo = documento.tipo === 'application/pdf'
+    ? h('iframe', { src: ruta, title: documento.nombre })
+    : h('div', { class: 'visor-imagen' }, h('img', { src: ruta, alt: documento.nombre }));
+  const visor = h('div', { class: 'visor', role: 'dialog', 'aria-modal': 'true', 'aria-label': `Documento ${documento.nombre}` },
+    h('div', { class: 'visor-barra' }, h('strong', {}, documento.nombre), h('span', { class: 'fila' }, h('a', { href: ruta, target: '_blank', rel: 'noopener' }, 'Abrir en otra pestaña'), cerrar)), lienzo);
+  const salir = () => { visor.remove(); document.removeEventListener('keydown', conTecla); if (anterior && anterior.focus) anterior.focus(); };
+  const conTecla = (evento) => evento.key === 'Escape' && salir();
+  cerrar.addEventListener('click', salir);
+  document.addEventListener('keydown', conTecla);
+  document.body.append(visor);
+  cerrar.focus();
 }
 
 const fecha = (texto) => (texto ? new Date(texto.length === 10 ? `${texto}T12:00:00` : texto).toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
@@ -284,6 +328,44 @@ async function pantallaDetalle(id) {
     const nombre = h('input', { maxlength: 160, value: t.clienteNombre || '', placeholder: s.tutelante || '' });
     const codigo = h('input', { maxlength: 64, value: t.referenciaCrm || '' });
     const nota = h('textarea', { maxlength: 1000, placeholder: 'Por ejemplo: la clienta confirmó que ya recibió la resolución' }, t.nota || '');
+    const ia = t.resumenIa;
+    const botonResumen = h('button', { type: 'button', class: ia ? 'secundario' : '' }, ia ? 'Actualizar resumen' : 'Generar resumen con IA');
+    const mensajeResumen = h('div');
+    botonResumen.addEventListener('click', () => conBoton(botonResumen, mensajeResumen, async () => {
+      mensajeResumen.replaceChildren(aviso('La IA está leyendo las actuaciones y los documentos. Puede tardar hasta un par de minutos.'));
+      await api('POST', `/v1/tramites/${id}/resumen`);
+      await cargar();
+    }));
+    const lista = (titulo, items) => (items && items.length ? h('div', { class: 'bloque-ia' }, h('strong', {}, titulo), h('ul', {}, items.map((item) => h('li', {}, item)))) : null);
+    const tarjetaResumen = h('div', { class: 'tarjeta' }, h('div', { class: 'fila entre' }, h('h2', {}, 'Resumen del caso (IA)'), ia ? chip(...(SENTIDOS[ia.sentidoFallo] || [ia.sentidoFallo, ''])) : null),
+      ia ? [h('p', {}, ia.resumen), h('p', {}, h('strong', {}, 'Hoy: '), ia.estadoActual), lista('Qué hacer', ia.pendientes), lista('Plazos', ia.plazos), lista('Para verificar', ia.advertencias),
+        h('p', { class: 'tenue' }, `Redactado el ${fechaHora(ia.generadoAt)} con ${ia.actuaciones} actuación(es) y ${ia.documentosLeidos.length} documento(s)${ia.documentosOmitidos ? `; ${ia.documentosOmitidos} no cupieron y no se leyeron` : ''}. Es una ayuda de lectura: confirma lo importante en el documento.`)]
+        : h('p', { class: 'tenue' }, d.funciones.resumenIa ? 'La IA lee las actuaciones y los documentos del caso y te dice en qué va, qué plazos corren y qué hay que hacer.' : 'El resumen con IA aún no está activado en este servidor.'),
+      mensajeResumen, d.funciones.resumenIa ? h('div', { class: 'acciones' }, botonResumen) : null);
+
+    const archivo = h('input', { type: 'file', accept: TIPOS_ARCHIVO, multiple: true });
+    const botonSubir = h('button', { type: 'submit', class: 'secundario' }, 'Subir');
+    const mensajeDocumentos = h('div');
+    const filaDocumento = (documento) => {
+      const quitar = h('button', { type: 'button', class: 'enlace-oscuro' }, 'Quitar');
+      quitar.addEventListener('click', () => confirm(`¿Quitar «${documento.nombre}» de este trámite?`) && conBoton(quitar, mensajeDocumentos, async () => { await api('DELETE', `/v1/documentos/${documento.id}`); await cargar(); }));
+      const ver = h('button', { type: 'button', class: 'enlace-oscuro nombre-documento' }, documento.nombre);
+      ver.addEventListener('click', () => abrirVisor(documento));
+      return h('tr', {}, h('td', {}, ver, h('div', { class: 'tenue' }, [ORIGENES[documento.origen], fecha(documento.createdAt), tamano(documento.bytes)].join(' · '))), h('td', { class: 'derecha' }, quitar));
+    };
+    const tarjetaDocumentos = h('div', { class: 'tarjeta' }, h('h2', {}, `Documentos (${d.documentos.length})`),
+      !d.funciones.documentos ? h('p', { class: 'tenue' }, 'El almacén de documentos aún no está activado en este servidor.')
+        : [d.documentos.length ? h('table', {}, h('tbody', {}, d.documentos.map(filaDocumento))) : h('p', { class: 'vacio' }, 'Aún no hay documentos. Los PDF que lleguen por correo del juzgado aparecerán aquí; también puedes subirlos.'),
+          mensajeDocumentos,
+          h('form', { class: 'fila acciones', onsubmit: (evento) => {
+            evento.preventDefault();
+            conBoton(botonSubir, mensajeDocumentos, async () => {
+              if (!archivo.files.length) throw new ErrorApi('Elige al menos un archivo PDF, PNG o JPG');
+              for (const elegido of archivo.files) await subirArchivo(`/v1/tramites/${id}/documentos`, elegido);
+              await cargar();
+            });
+          } }, h('label', { class: 'oculto', for: 'archivo-documento' }, 'Archivo'), Object.assign(archivo, { id: 'archivo-documento' }), botonSubir)]);
+
     const botonDatos = h('button', { type: 'submit', class: 'secundario' }, 'Guardar');
     const mensajeDatos = h('div');
     const accion = (texto, clase, hacer) => {
@@ -311,6 +393,8 @@ async function pantallaDetalle(id) {
           h('div', { class: 'tenue' }, 'Orientación general según la etapa. Confírmala leyendo la providencia; los plazos reales corren desde la notificación.')) : null,
         t.tipo === 'TUTELA' ? h('div', { class: 'acciones' }, campo('Etapa del caso', etapa),
           h('p', { class: 'tenue' }, s.esManual ? 'Etapa fijada a mano: Radika no la cambiará sola, pero te avisará si llega una novedad distinta. Elige «Automática» para devolverle el control.' : 'Radika la actualiza sola con cada actuación. Puedes fijar otra si conoces algo que la consulta no muestra.')) : null),
+      tarjetaResumen,
+      tarjetaDocumentos,
       h('div', { class: 'tarjeta' }, h('dl', {},
         h('dt', {}, 'Tutelante'), h('dd', {}, s.tutelante || '—'),
         h('dt', {}, 'Accionado'), h('dd', {}, s.accionado || '—'),

@@ -128,6 +128,11 @@ siempre el mismo sobre:
 | `GET /v1/tramites` | Lista con filtros `referenciaCrm`, `tipo`, `estado`, `page`, `limit` |
 | `GET /v1/tramites/:id` | Detalle con actuaciones, términos calculados y `situacion` (etapa, tutelante, nota del último estado, recomendación y alertas) |
 | `PATCH /v1/tramites/:id` | Cambia `estado` (`ACTIVO`, `PAUSADO`, `CERRADO`), `referenciaCrm`, `clienteNombre`, `nota` o `etapaManual` (`null` devuelve la etapa al cálculo automático) |
+| `POST /v1/tramites/:id/resumen` | Redacta con IA el resumen del caso (actuaciones + documentos) y lo guarda en `tramite.resumenIa` |
+| `GET /v1/tramites/:id/documentos` | Documentos del trámite |
+| `POST /v1/tramites/:id/documentos` | Sube un PDF, PNG o JPG (máx. 15 MB) como cuerpo de la petición; nombre en `X-Nombre-Archivo` (codificado para URL) |
+| `GET /v1/documentos/:id/contenido` | El archivo, para verlo en el visor |
+| `DELETE /v1/documentos/:id` | Quita el documento y borra su archivo |
 | `GET /v1/panel` | Tablero: totales, tutelas por etapa, lo que requiere atención y próximos vencimientos |
 | `DELETE /v1/tramites/:id` | Elimina el trámite y su historial |
 | `POST /v1/tramites/:id/revisar` | Revisa ahora mismo, sin esperar el turno |
@@ -298,6 +303,26 @@ hasta que llega el primer correo del juzgado.
 
 La lógica del lector está probada con un buzón simulado; la conexión IMAP real se comprueba
 al desplegar, con el buzón de verdad.
+
+## Documentos y resumen del caso
+
+Cada trámite puede tener documentos (autos, fallos, actas). Llegan de dos formas: los PDF
+adjuntos a un correo del juzgado que Radika logró enlazar, y los que alguien sube desde la
+pantalla del caso. Se ven en un visor dentro de Radika.
+
+- El contenido se guarda en un almacén privado: el bucket de `DOCUMENTOS_BUCKET` (S3, cifrado,
+  sin acceso público) o, en desarrollo, la carpeta de `DOCUMENTOS_DIR`. Sin ninguno de los dos
+  la función queda apagada.
+- Solo se aceptan PDF, PNG y JPG, reconocidos por su contenido y no por la extensión.
+- Al borrar un documento o un trámite se borra también el archivo.
+
+Con `ANTHROPIC_API_KEY`, el botón «Generar resumen con IA» envía a Claude las actuaciones y los
+documentos más recientes del caso (hasta 8 y 18 MB en total) y guarda lo que responde: de qué
+trata, en qué va, sentido del fallo, plazos, qué hacer y qué verificar. Si algún documento no
+cabe, el resumen lo dice. Esto implica enviar datos del cliente a la API de Anthropic.
+
+`IMAP_HISTORIAL_DIAS` (por defecto 0) hace que, la primera vez que Radika ve una carpeta del
+buzón, procese también los correos de esos días hacia atrás, con sus adjuntos.
 
 ## Portales con usuario y clave
 

@@ -43,7 +43,7 @@ const MENSAJES_PORTAL: Readonly<Record<CodigoPortal, string>> = {
 type ActuacionEncontrada = ActuacionFuente & { readonly despacho: string | null };
 
 export type ResultadoCorreo =
-  | { readonly vinculado: true; readonly tramiteId: string; readonly duplicado: boolean }
+  | { readonly vinculado: true; readonly tramiteId: string; readonly duplicado: boolean; readonly actuacionId?: string }
   | {
       readonly vinculado: false;
       readonly motivo: 'REMITENTE_NO_CONFIABLE' | 'SIN_RADICADO' | 'SIN_TRAMITE' | 'AMBIGUO';
@@ -213,7 +213,7 @@ export class MonitorService {
     const yaExiste = await this.actuaciones.existsBy({ tramiteId: tramite.id, claveFuente: clave });
     if (yaExiste) return { vinculado: true, tramiteId: tramite.id, duplicado: true };
     const adjuntos = correo.adjuntos?.length ? ` Adjuntos: ${correo.adjuntos.join('; ')}.` : '';
-    await this.registrarExterna(tramite, 'CORREO', {
+    const actuacion = await this.registrarExterna(tramite, 'CORREO', {
       clave,
       fecha: hoyEnColombia(new Date(correo.date)),
       titulo: tituloDesdeAsunto(correo.subject),
@@ -223,7 +223,7 @@ export class MonitorService {
       fechaRegistro: hoyEnColombia(),
       despacho: correo.fromNombre ?? tramite.despacho,
     });
-    return { vinculado: true, tramiteId: tramite.id, duplicado: false };
+    return { vinculado: true, tramiteId: tramite.id, duplicado: false, actuacionId: actuacion.id };
   }
 
   private async buscarPorPistas(pistas: PistasRadicado): Promise<Tramite | 'AMBIGUO' | 'SIN_RADICADO' | 'SIN_TRAMITE'> {

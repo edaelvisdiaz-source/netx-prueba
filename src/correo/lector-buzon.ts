@@ -22,6 +22,13 @@ export interface LecturaCarpeta {
   readonly uidMaximo: number;
   /** Vacio si la carpeta es nueva para Radika o fue renumerada: primero se fija el punto de partida. */
   readonly correos: ReadonlyArray<CorreoLeido>;
+  /** En una carpeta nueva: desde que UID empezar si se pidio procesar historial (si falta, desde `uidMaximo`). */
+  readonly inicio?: number;
+}
+
+export interface AdjuntoDescargado {
+  readonly nombre: string;
+  readonly contenido: Buffer;
 }
 
 /** Acceso de solo lectura al buzon donde llegan las notificaciones. Nunca mueve, marca ni borra. */
@@ -38,4 +45,6 @@ export abstract class LectorBuzon {
    * cuando el asunto no lo trae; quien lo pide no debe guardarlo.
    */
   abstract leerContenido(carpeta: string, uid: number): Promise<string>;
+  /** Los PDF adjuntos de un correo (unos pocos, de tamano moderado), para guardarlos en el tramite. */
+  abstract descargarAdjuntos(carpeta: string, uid: number): Promise<AdjuntoDescargado[]>;
 }

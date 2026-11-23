@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { ENV, Env } from '../config/env';
+import { DocumentosService } from '../documentos/documentos.service';
 import { MonitorService, ResultadoCorreo } from '../monitor/monitor.service';
 import { esRemitenteConfiable } from './analizar-correo';
 import { Buzon, CorreoPendiente } from './buzon.entity';
@@ -13,6 +14,7 @@ const PENDIENTES_POR_PAGINA = 100;
 const TEXTO_MAXIMO = 50_000;
 /** Cada apertura es una conexion al servidor de correo: una avalancha de correos no debe saturarlo. */
 const APERTURAS_POR_SINCRONIZACION = 20;
+const DESCARGAS_POR_SINCRONIZACION = 20;
 
 export interface ResultadoBuzon {
   readonly leidos: number;
@@ -27,6 +29,7 @@ const SIN_NOVEDAD: ResultadoBuzon = { leidos: 0, vinculados: 0, pendientes: 0 };
 export class BuzonService {
   private readonly logger = new Logger(BuzonService.name);
   private aperturas = 0;
+  private descargas = 0;
 
   constructor(
     @InjectRepository(Buzon) private readonly buzones: Repository<Buzon>,
@@ -34,6 +37,7 @@ export class BuzonService {
     @Inject(ENV) private readonly env: Env,
     private readonly lector: LectorBuzon,
     private readonly monitor: MonitorService,
+    private readonly documentos: DocumentosService,
   ) {}
 
   async sincronizar(): Promise<ResultadoBuzon> {
@@ -44,6 +48,7 @@ export class BuzonService {
     const lecturas = await this.lector.leer(puntos, CORREOS_POR_TANDA);
 
     this.aperturas = 0;
+    this.descargas = 0;
     let total: ResultadoBuzon = SIN_NOVEDAD;
     for (const lectura of lecturas) {
       const parcial = await this.procesarCarpeta(direccion, lectura, puntos.get(lectura.carpeta));
@@ -56,8 +61,9 @@ export class BuzonService {
     const { carpeta } = lectura;
     // Primera vez (o el servidor renumero la carpeta): se toma el punto de partida sin procesar el historial.
     if (!punto || punto.uidValidity !== lectura.uidValidity) {
-      await this.buzones.save({ direccion, carpeta, uidValidity: lectura.uidValidity, ultimoUid: lectura.uidMaximo });
-      this.logger.log(`Buzon ${direccion}, carpeta ${carpeta}: se leera a partir del correo ${lectura.uidMaximo + 1}`);
+      const inicio = Math.min(lectura.inicio ?? lectura.uidMaximo, lectura.uidMaximo);
+      await this.buzones.save({ direccion, carpeta, uidValidity: lectura.uidValidity, ultimoUid: inicio });
+      this.logger.log(`Buzon ${direccion}, carpeta ${carpeta}: se leera a partir del correo ${inicio + 1}`);
       return SIN_NOVEDAD;
     }
 
@@ -69,6 +75,7 @@ export class BuzonService {
         const resultado = await this.registrar(carpeta, correo);
         if (resultado.vinculado) {
           vinculados += 1;
+          if (!resultado.duplicado) await this.guardarAdjuntos(carpeta, correo, resultado.tramiteId, resultado.actuacionId ?? null);
         } else if (resultado.motivo !== 'REMITENTE_NO_CONFIABLE') {
           pendientes += await this.dejarPendiente(direccion, carpeta, correo, resultado.motivo, resultado.radicadoSugerido ?? null);
         }
@@ -104,6 +111,20 @@ export class BuzonService {
       return porEncabezados;
     }
     return texto.trim() ? this.monitor.registrarCorreo({ ...entrante, texto }) : porEncabezados;
+  }
+
+  /** Guarda en el tramite los PDF que trajo el correo. Si algo falla, el correo ya quedo registrado y se sigue. */
+  private async guardarAdjuntos(carpeta: string, correo: CorreoLeido, tramiteId: string, actuacionId: string | null): Promise<void> {
+    const traePdf = correo.adjuntos.some((nombre) => /\.pdf$/i.test(nombre));
+    if (!traePdf || !this.documentos.activo || this.descargas >= DESCARGAS_POR_SINCRONIZACION) return;
+    this.descargas += 1;
+    try {
+      for (const adjunto of await this.lector.descargarAdjuntos(carpeta, correo.uid)) {
+        await this.documentos.agregar(tramiteId, { nombre: adjunto.nombre, contenido: adjunto.contenido, origen: 'CORREO', actuacionId });
+      }
+    } catch (error) {
+      this.logger.warn(`No se guardaron los adjuntos del correo ${correo.uid} de ${carpeta}: ${error instanceof Error ? error.message : 'error'}`);
+    }
   }
 
   /** Devuelve 1 si el correo quedo pendiente por primera vez (el mismo correo puede estar en dos carpetas). */

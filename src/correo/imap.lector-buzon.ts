@@ -1,7 +1,7 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ImapFlow } from 'imapflow';
 import { ENV, Env } from '../config/env';
-import { CorreoLeido, LectorBuzon, LecturaCarpeta, PuntoDeLectura } from './lector-buzon';
+import { AdjuntoDescargado, CorreoLeido, LectorBuzon, LecturaCarpeta, PuntoDeLectura } from './lector-buzon';
 import { textoDePdf } from './texto-pdf';
 
 export interface NodoEstructura {
@@ -32,6 +32,9 @@ const PDF_MAXIMOS = 2;
 const PDF_BYTES_MAXIMOS = 3 * 1024 * 1024;
 const CUERPO_BYTES_MAXIMOS = 200 * 1024;
 const TEXTO_MAXIMO = 50_000;
+const ADJUNTOS_MAXIMOS = 6;
+const ADJUNTO_BYTES_MAXIMOS = 15 * 1024 * 1024;
+const MS_DIA = 86_400_000;
 const NOMBRE_DE_ACTA = /acta|reparto|caratula|radica/i;
 
 function nombreDe(nodo: NodoEstructura): string | undefined {
@@ -75,6 +78,15 @@ export function partesConRadicado(estructura: NodoEstructura | undefined): { cue
     .sort((a, b) => Number(NOMBRE_DE_ACTA.test(b.nombre)) - Number(NOMBRE_DE_ACTA.test(a.nombre)))
     .slice(0, PDF_MAXIMOS);
   return { cuerpo: cuerpo?.part ?? null, pdfs };
+}
+
+/** Los PDF adjuntos que vale la pena guardar: pocos y de tamano moderado. */
+export function pdfAdjuntos(estructura: NodoEstructura | undefined): ParteUtil[] {
+  return hojas(estructura)
+    .filter((nodo) => esAdjunto(nodo) && (nodo.type === 'application/pdf' || /\.pdf$/i.test(nombreDe(nodo) ?? '')))
+    .filter((nodo) => (nodo.size ?? Number.MAX_SAFE_INTEGER) <= ADJUNTO_BYTES_MAXIMOS * 1.4) // el tamano declarado incluye la codificacion base64
+    .map((nodo) => ({ part: nodo.part ?? '1', nombre: nombreDe(nodo) ?? 'adjunto.pdf' }))
+    .slice(0, ADJUNTOS_MAXIMOS);
 }
 
 /**
@@ -182,7 +194,16 @@ export class ImapLectorBuzon extends LectorBuzon {
         });
       }
     }
-    return { carpeta, uidValidity, uidMaximo, correos: correos.sort((a, b) => a.uid - b.uid) };
+    return { carpeta, uidValidity, uidMaximo, correos: correos.sort((a, b) => a.uid - b.uid), ...(await this.inicioDeHistorial(cliente, punto, uidMaximo)) };
+  }
+
+  /** Carpeta que Radika ve por primera vez: si se pidio historial, empieza justo antes del primer correo de esos dias. */
+  /* istanbul ignore next */
+  private async inicioDeHistorial(cliente: ImapFlow, punto: PuntoDeLectura | undefined, uidMaximo: number): Promise<{ inicio?: number }> {
+    if (punto || this.env.IMAP_HISTORIAL_DIAS === 0) return {};
+    const desde = new Date(Date.now() - this.env.IMAP_HISTORIAL_DIAS * MS_DIA);
+    const uids = (await cliente.search({ since: desde }, { uid: true })) || [];
+    return { inicio: uids.length ? Math.min(...uids) - 1 : uidMaximo };
   }
 
   /* istanbul ignore next */
@@ -196,6 +217,22 @@ export class ImapLectorBuzon extends LectorBuzon {
         if (cuerpo) textos.push(textoPlano((await descargar(cliente, uid, cuerpo, CUERPO_BYTES_MAXIMOS)).toString('utf8')));
         for (const pdf of pdfs) textos.push(await textoDePdf(await descargar(cliente, uid, pdf.part, PDF_BYTES_MAXIMOS)));
         return textos.join('\n');
+      }),
+    );
+  }
+
+  /* istanbul ignore next */
+  descargarAdjuntos(carpeta: string, uid: number): Promise<AdjuntoDescargado[]> {
+    return this.conectado((cliente) =>
+      this.enCarpeta(cliente, carpeta, async () => {
+        const mensaje = await cliente.fetchOne(String(uid), { bodyStructure: true }, { uid: true });
+        if (!mensaje) return [];
+        const adjuntos: AdjuntoDescargado[] = [];
+        for (const pdf of pdfAdjuntos(mensaje.bodyStructure as NodoEstructura | undefined)) {
+          const contenido = await descargar(cliente, uid, pdf.part, ADJUNTO_BYTES_MAXIMOS);
+          if (contenido.length > 0) adjuntos.push({ nombre: pdf.nombre, contenido });
+        }
+        return adjuntos;
       }),
     );
   }

@@ -9,7 +9,9 @@ import { Publico } from '../auth/api-key.guard';
 import { ok, validar } from '../common/respuesta';
 import { BovedaService } from '../boveda/boveda.service';
 import { BuzonService } from '../correo/buzon.service';
+import { DocumentosService } from '../documentos/documentos.service';
 import { MonitorService } from '../monitor/monitor.service';
+import { ResumenCasoService } from '../resumen/resumen-caso.service';
 import { EventosService } from '../notificaciones/eventos.service';
 import {
   actualizarTramiteSchema, crearTramiteSchema, listarEventosSchema, listarTramitesSchema,
@@ -20,6 +22,7 @@ import { TramitesService } from './tramites.service';
 const REVISIONES_MANUALES_POR_MINUTO = 10;
 const NOVEDADES_EN_PANTALLA = 100;
 const CAMBIOS_DE_CREDENCIAL_POR_MINUTO = 30;
+const RESUMENES_POR_MINUTO = 6;
 const VENTANA_MS = 60_000;
 
 @Controller()
@@ -31,6 +34,8 @@ export class TramitesController {
     private readonly buzon: BuzonService,
     @InjectDataSource() private readonly datos: DataSource,
     private readonly boveda: BovedaService,
+    private readonly documentos: DocumentosService,
+    private readonly resumenCaso: ResumenCasoService,
   ) {}
 
   @Publico()
@@ -65,7 +70,21 @@ export class TramitesController {
 
   @Get('v1/tramites/:id')
   async detalle(@Param('id', ParseUUIDPipe) id: string) {
-    return ok({ ...(await this.tramites.detalle(id)), credencialConfigurada: await this.boveda.existe(id) });
+    return ok({
+      ...(await this.tramites.detalle(id)),
+      credencialConfigurada: await this.boveda.existe(id),
+      documentos: this.documentos.activo ? await this.documentos.listar(id) : [],
+      // Para que la pantalla sepa que ofrecer.
+      funciones: { documentos: this.documentos.activo, resumenIa: this.resumenCaso.activo },
+    });
+  }
+
+  /** Redacta (o vuelve a redactar) el resumen del caso con IA, leyendo sus documentos. */
+  @Post('v1/tramites/:id/resumen')
+  @Throttle({ default: { limit: RESUMENES_POR_MINUTO, ttl: VENTANA_MS } })
+  @HttpCode(HttpStatus.OK)
+  async resumir(@Param('id', ParseUUIDPipe) id: string) {
+    return ok(await this.resumenCaso.generar(id));
   }
 
   @Patch('v1/tramites/:id')
@@ -81,6 +100,8 @@ export class TramitesController {
   @Delete('v1/tramites/:id')
   @HttpCode(HttpStatus.OK)
   async eliminar(@Param('id', ParseUUIDPipe) id: string) {
+    await this.tramites.obtener(id);
+    await this.documentos.eliminarDeTramite(id);
     await this.tramites.eliminar(id);
     return ok({ eliminado: true });
   }

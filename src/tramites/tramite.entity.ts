@@ -1,4 +1,5 @@
 import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import type { ResumenCaso } from '../resumen/resumen-caso';
 import type { Etapa } from './situacion';
 import { EstadoTramite, FuenteId, TipoTramite } from './tipos';
 
@@ -20,6 +21,8 @@ export class Tramite {
   @Column({ name: 'etapa_manual_at', type: 'timestamptz', nullable: true }) etapaManualAt!: Date | null;
   /** Nota libre del asesor sobre el caso. */
   @Column({ type: 'text', nullable: true }) nota!: string | null;
+  /** Resumen del caso redactado con IA, la ultima vez que alguien lo pidio. */
+  @Column({ name: 'resumen_ia', type: 'jsonb', nullable: true }) resumenIa!: ResumenCaso | null;
   @Column({ type: 'text', nullable: true }) despacho!: string | null;
   @Column({ type: 'text', nullable: true }) sujetos!: string | null;
   @Column({ name: 'fecha_radicacion', type: 'date', nullable: true }) fechaRadicacion!: string | null;

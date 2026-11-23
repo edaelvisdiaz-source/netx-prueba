@@ -8,7 +8,9 @@ import { AppModule } from '../src/app.module';
 import { BovedaService, CredencialPortal } from '../src/boveda/boveda.service';
 import { ENV, Env } from '../src/config/env';
 import { BuzonService } from '../src/correo/buzon.service';
-import { CorreoLeido, LectorBuzon, LecturaCarpeta, PuntoDeLectura } from '../src/correo/lector-buzon';
+import { AdjuntoDescargado, CorreoLeido, LectorBuzon, LecturaCarpeta, PuntoDeLectura } from '../src/correo/lector-buzon';
+import { AlmacenDocumentos } from '../src/documentos/almacen';
+import { EntradaResumenCaso, ResumidorDeCasos, TextoResumenCaso } from '../src/resumen/resumen-caso';
 import { ActuacionFuente, Fuente, FuenteError, ProcesoFuente } from '../src/fuentes/fuente';
 import { EstadoPortal, FuentePortal, PORTALES, PortalError } from '../src/fuentes/fuente-portal';
 import { RamaJudicialFuente } from '../src/fuentes/rama-judicial.fuente';
@@ -86,12 +88,55 @@ class LectorFalso extends LectorBuzon {
     });
   }
 
+  adjuntos: Record<number, AdjuntoDescargado[]> = {};
+
+  async descargarAdjuntos(_carpeta: string, uid: number): Promise<AdjuntoDescargado[]> {
+    if (uid === 98) throw new Error('adjunto ilegible');
+    return this.adjuntos[uid] ?? [];
+  }
+
   async leerContenido(_carpeta: string, uid: number): Promise<string> {
     this.abiertos.push(uid);
     if (uid === 99) throw new Error('correo ilegible');
     return this.contenidos[uid] ?? '';
   }
 }
+
+class AlmacenFalso extends AlmacenDocumentos {
+  activo = true;
+  archivos = new Map<string, Buffer>();
+
+  async guardar(clave: string, contenido: Buffer): Promise<void> {
+    this.archivos.set(clave, contenido);
+  }
+
+  async leer(clave: string): Promise<Buffer> {
+    const contenido = this.archivos.get(clave);
+    if (!contenido) throw new Error('no existe');
+    return contenido;
+  }
+
+  async eliminar(clave: string): Promise<void> {
+    this.archivos.delete(clave);
+  }
+}
+
+class ResumidorDeCasosFalso extends ResumidorDeCasos {
+  activo = true;
+  falla = false;
+  pedidos: EntradaResumenCaso[] = [];
+
+  async resumir(entrada: EntradaResumenCaso): Promise<TextoResumenCaso | null> {
+    this.pedidos.push(entrada);
+    if (this.falla) return null;
+    return {
+      resumen: `Caso con ${entrada.actuaciones.length} actuaciones y ${entrada.documentos.length} documentos`, estadoActual: 'Con fallo',
+      sentidoFallo: 'A_FAVOR', plazos: ['48 horas para responder'], pendientes: ['Verificar cumplimiento'], advertencias: [],
+    };
+  }
+}
+
+const PDF = (texto: string) => Buffer.from(`%PDF-1.4\n${texto}\n%%EOF`);
 
 const proceso = (fechaRadicacion: string): ProcesoFuente => ({
   idFuente: '77', despacho: 'JUZGADO 5 CIVIL', sujetos: 'Accionante: A | Accionado: MEN', fechaRadicacion, privado: false,
@@ -116,6 +161,8 @@ describe('Radika API', () => {
   const resumidor = new ResumidorFalso();
   const lector = new LectorFalso();
   const portal = new PortalFalso();
+  const almacen = new AlmacenFalso();
+  const resumidorDeCasos = new ResumidorDeCasosFalso();
   const recibidos: Array<{ cuerpo: string; firma: string; marca: string }> = [];
   let estadoCrm = 200;
 
@@ -155,6 +202,10 @@ describe('Radika API', () => {
       .useValue(lector)
       .overrideProvider(PORTALES)
       .useValue([portal])
+      .overrideProvider(AlmacenDocumentos)
+      .useValue(almacen)
+      .overrideProvider(ResumidorDeCasos)
+      .useValue(resumidorDeCasos)
       .compile();
     app = modulo.createNestApplication();
     await app.init();
@@ -162,10 +213,13 @@ describe('Radika API', () => {
   });
 
   beforeEach(async () => {
-    await datos.query('TRUNCATE eventos, actuaciones, tramites, buzones, correos_pendientes, credenciales, accesos_portal, usuarios, sesiones');
+    await datos.query('TRUNCATE documentos, eventos, actuaciones, tramites, buzones, correos_pendientes, credenciales, accesos_portal, usuarios, sesiones');
     portal.estado = { estado: 'Radicado', detalle: null };
     portal.fallo = null;
     portal.recibidas = [];
+    Object.assign(almacen, { activo: true, archivos: new Map() });
+    Object.assign(resumidorDeCasos, { activo: true, falla: false, pedidos: [] });
+    lector.adjuntos = {};
     lector.buzon = 'asesor@empresa.test';
     lector.uidValidity = '1';
     lector.correos = [];
@@ -485,7 +539,7 @@ describe('Radika API', () => {
     const fallo = await correo('NOTIFICA FALLO TUTELA 110013109017-2026 - 9795 Accionante: PERSONA DE EJEMPLO', {
       adjuntos: ['10. Fallo de tutela 9795. Hecho superado.pdf'],
     }).expect(200);
-    expect(fallo.body.data).toEqual({ vinculado: true, tramiteId: penal.id, duplicado: false });
+    expect(fallo.body.data).toEqual({ vinculado: true, tramiteId: penal.id, duplicado: false, actuacionId: expect.any(String) });
     const repetido = await correo('NOTIFICA FALLO TUTELA 110013109017-2026 - 9795 Accionante: PERSONA DE EJEMPLO', {
       adjuntos: ['10. Fallo de tutela 9795. Hecho superado.pdf'],
     });
@@ -834,6 +888,114 @@ describe('Radika API', () => {
 
     await conLlave(api().patch(`/v1/tramites/${tramite.id}`)).send({ estado: 'CERRADO' }).expect(200);
     expect((await conLlave(api().get('/v1/panel')).expect(200)).body.data.totales.activos).toBe(0);
+  });
+
+  test('documentos: se suben, se ven solo dentro de Radika, no se repiten y se borran con el tramite', async () => {
+    const tutela = await crearTutela();
+    const subir = (contenido: Buffer, nombre: string, tipo = 'application/pdf') =>
+      conLlave(api().post(`/v1/tramites/${tutela.id}/documentos`)).set('Content-Type', tipo).set('X-Nombre-Archivo', encodeURIComponent(nombre)).send(contenido);
+
+    const fallo = (await subir(PDF('fallo'), '../../Fallo de tutela ñ.pdf').expect(201)).body.data;
+    expect(fallo).toMatchObject({ nombre: 'Fallo de tutela ñ.pdf', tipo: 'application/pdf', origen: 'MANUAL', tramiteId: tutela.id });
+    expect(fallo.clave).toBeUndefined();
+    // El mismo archivo otra vez devuelve el que ya estaba.
+    expect((await subir(PDF('fallo'), 'copia.pdf').expect(201)).body.data.id).toBe(fallo.id);
+    expect(almacen.archivos.size).toBe(1);
+
+    await subir(Buffer.from('<html><script>alert(1)</script></html>'), 'malo.pdf').expect(400);
+    await subir(Buffer.from('MZ ejecutable'), 'virus.exe', 'application/octet-stream').expect(400);
+    await conLlave(api().post(`/v1/tramites/${tutela.id}/documentos`)).send({ nombre: 'x' }).expect(400);
+    await conLlave(api().post('/v1/tramites/11111111-1111-4111-8111-111111111111/documentos')).set('Content-Type', 'application/pdf').send(PDF('x')).expect(404);
+    await api().get(`/v1/documentos/${fallo.id}/contenido`).expect(401);
+
+    const visto = await conLlave(api().get(`/v1/documentos/${fallo.id}/contenido`)).buffer(true).parse((respuesta, listo) => {
+      const trozos: Buffer[] = [];
+      respuesta.on('data', (trozo: Buffer) => trozos.push(trozo));
+      respuesta.on('end', () => listo(null, Buffer.concat(trozos)));
+    }).expect(200);
+    expect(visto.body.equals(PDF('fallo'))).toBe(true);
+    expect(visto.headers['content-type']).toBe('application/pdf');
+    expect(visto.headers['content-security-policy']).toBe("frame-ancestors 'self'");
+    expect(visto.headers['x-content-type-options']).toBe('nosniff');
+    expect(visto.headers['content-disposition']).toContain("inline; filename*=UTF-8''Fallo%20de%20tutela%20%C3%B1.pdf");
+
+    const detalle = (await conLlave(api().get(`/v1/tramites/${tutela.id}`)).expect(200)).body.data;
+    expect(detalle.documentos).toHaveLength(1);
+    expect(detalle.funciones).toEqual({ documentos: true, resumenIa: true });
+
+    const otro = (await subir(Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('imagen')]), 'captura.png', 'image/png').expect(201)).body.data;
+    expect(otro.tipo).toBe('image/png');
+    await conLlave(api().delete(`/v1/documentos/${otro.id}`)).expect(200);
+    await conLlave(api().delete(`/v1/documentos/${otro.id}`)).expect(404);
+    expect(almacen.archivos.size).toBe(1);
+
+    await conLlave(api().delete(`/v1/tramites/${tutela.id}`)).expect(200);
+    expect(almacen.archivos.size).toBe(0);
+    expect(await datos.query('SELECT count(*)::int AS n FROM documentos')).toEqual([{ n: 0 }]);
+
+    almacen.activo = false;
+    const sinAlmacen = await crearTutela();
+    await conLlave(api().post(`/v1/tramites/${sinAlmacen.id}/documentos`)).set('Content-Type', 'application/pdf').send(PDF('x')).expect(503);
+    expect((await conLlave(api().get(`/v1/tramites/${sinAlmacen.id}`))).body.data.funciones.documentos).toBe(false);
+  });
+
+  test('los PDF de un correo del juzgado quedan en el tramite, ligados a su actuacion', async () => {
+    const buzon = app.get(BuzonService);
+    const juzgado = 'j17pccbt@cendoj.ramajudicial.gov.co';
+    const correo = (uid: number, subject: string, adjuntos: string[]): CorreoLeido => ({
+      uid, from: juzgado, subject, messageId: `<d${uid}@correo.test>`, fromNombre: 'Juzgado 17', date: '2026-11-11T21:54:06Z', adjuntos,
+    });
+    const tutela = await crearTutela('11001310901720260979500');
+    Object.assign(lector, { uidValidity: '9', correos: [correo(1, 'viejo', [])], otras: {} });
+    await buzon.sincronizar();
+    lector.correos = [
+      correo(1, 'viejo', []),
+      correo(2, 'NOTIFICA FALLO TUTELA 110013109017-2026 - 9795', ['Fallo.pdf', 'firma.png']),
+      correo(3, 'NOTIFICA AUTO TUTELA 110013109017-2026 - 9795', []),
+      correo(98, 'REQUIERE TUTELA 110013109017-2026 - 9795', ['Oficio.pdf']),
+    ];
+    lector.adjuntos = { 2: [{ nombre: 'Fallo.pdf', contenido: PDF('sentencia') }, { nombre: 'raro.pdf', contenido: Buffer.from('no es pdf') }] };
+    // Un adjunto que no se puede leer o descargar no impide registrar los correos.
+    expect(await buzon.sincronizar()).toEqual({ leidos: 3, vinculados: 3, pendientes: 0 });
+
+    const documentos = (await conLlave(api().get(`/v1/tramites/${tutela.id}/documentos`)).expect(200)).body.data.documentos;
+    expect(documentos).toMatchObject([{ nombre: 'Fallo.pdf', origen: 'CORREO', tipo: 'application/pdf' }]);
+    const [{ titulo }] = await datos.query('SELECT titulo FROM actuaciones WHERE id = $1', [documentos[0].actuacionId]);
+    expect(titulo).toBe('NOTIFICA FALLO TUTELA 110013109017-2026 - 9795');
+    Object.assign(lector, { uidValidity: '1', correos: [], adjuntos: {} });
+  });
+
+  test('resumen del caso con IA: lee actuaciones y documentos, queda guardado y avisa si no esta disponible', async () => {
+    fuente.procesos = [proceso('2026-11-03')];
+    fuente.actuaciones = [actuacion('1', '2026-11-04', 'Auto admite tutela'), actuacion('2', '2026-11-17', 'Sentencia de primera instancia')];
+    const tutela = await crearTutela();
+    await app.get(MonitorService).revisar(tutela.id);
+    const subir = (contenido: Buffer, nombre: string) =>
+      conLlave(api().post(`/v1/tramites/${tutela.id}/documentos`)).set('Content-Type', 'application/pdf').set('X-Nombre-Archivo', nombre).send(contenido).expect(201);
+    await subir(PDF('admision'), 'Admision.pdf');
+    await subir(PDF('sentencia'), 'Fallo.pdf');
+    // Uno tan grande que, junto con los demas, no cabe en una sola consulta a la IA.
+    const enorme = (await subir(Buffer.concat([PDF('anexos'), Buffer.alloc(14 * 1024 * 1024)]), 'Anexos.pdf')).body.data;
+    await subir(Buffer.concat([PDF('mas anexos'), Buffer.alloc(13 * 1024 * 1024)]), 'Mas anexos.pdf');
+
+    const resumen = (await conLlave(api().post(`/v1/tramites/${tutela.id}/resumen`)).expect(200)).body.data;
+    expect(resumen).toMatchObject({ sentidoFallo: 'A_FAVOR', actuaciones: 2, documentosOmitidos: 1, pendientes: ['Verificar cumplimiento'] });
+    expect(resumen.documentosLeidos.map((documento: { nombre: string }) => documento.nombre).sort()).toEqual(['Admision.pdf', 'Fallo.pdf', 'Mas anexos.pdf']);
+    expect(resumen.documentosLeidos.some((documento: { id: string }) => documento.id === enorme.id)).toBe(false);
+    const [pedido] = resumidorDeCasos.pedidos;
+    expect(pedido.actuaciones.map((item) => item.titulo)).toEqual(['Auto admite tutela', 'Sentencia de primera instancia']);
+    expect(pedido.documentos.map((documento) => documento.nombre)).toEqual(['Admision.pdf', 'Fallo.pdf', 'Mas anexos.pdf']);
+    expect(pedido).toMatchObject({ tipoTramite: 'TUTELA', etapa: 'FALLO_SIN_CLASIFICAR', despacho: 'JUZGADO 5 CIVIL' });
+
+    const detalle = (await conLlave(api().get(`/v1/tramites/${tutela.id}`)).expect(200)).body.data;
+    expect(detalle.tramite.resumenIa).toMatchObject({ estadoActual: 'Con fallo', generadoAt: expect.any(String) });
+
+    resumidorDeCasos.falla = true;
+    await conLlave(api().post(`/v1/tramites/${tutela.id}/resumen`)).expect(502);
+    expect((await conLlave(api().get(`/v1/tramites/${tutela.id}`))).body.data.tramite.resumenIa.estadoActual).toBe('Con fallo');
+    resumidorDeCasos.activo = false;
+    expect((await conLlave(api().post(`/v1/tramites/${tutela.id}/resumen`)).expect(503)).body.error.message).toContain('no esta configurado');
+    expect((await conLlave(api().get(`/v1/tramites/${tutela.id}`))).body.data.funciones.resumenIa).toBe(false);
   });
 
   test('un cuerpo mal formado responde 400 y no 500', async () => {

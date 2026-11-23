@@ -40,6 +40,11 @@ const esquema = z
     IMAP_PORT: z.coerce.number().int().min(1).max(65535).default(993),
     IMAP_USER: z.string().email().optional().or(z.literal('').transform(() => undefined)),
     IMAP_PASSWORD: z.string().min(1).optional().or(z.literal('').transform(() => undefined)),
+    /** Almacen privado de documentos: un bucket de S3 (produccion) o una carpeta local (desarrollo). Sin ninguno, el visor queda apagado. */
+    DOCUMENTOS_BUCKET: z.string().min(3).optional().or(z.literal('').transform(() => undefined)),
+    DOCUMENTOS_DIR: z.string().min(1).optional().or(z.literal('').transform(() => undefined)),
+    /** Al ver una carpeta del buzon por primera vez, cuantos dias hacia atras procesar. 0 = solo lo que llegue desde ahora. */
+    IMAP_HISTORIAL_DIAS: z.coerce.number().int().min(0).max(365).default(0),
     /** Carpetas a vigilar, separadas por coma. Si falta, se vigilan todas menos enviados, borradores, papelera y spam. */
     IMAP_CARPETAS: z
       .string()

@@ -1,4 +1,5 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
+import { raw } from 'express';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
@@ -31,6 +32,14 @@ import { Etapas1700000000004 } from './migrations/1700000000004-etapas';
 import { Reclasificar1700000000005 } from './migrations/1700000000005-reclasificar';
 import { CarpetasBuzon1700000000006 } from './migrations/1700000000006-carpetas-buzon';
 import { EtapaEventos1700000000007 } from './migrations/1700000000007-etapa-eventos';
+import { Documentos1700000000008 } from './migrations/1700000000008-documentos';
+import { AlmacenConfigurado, AlmacenDocumentos } from './documentos/almacen';
+import { Documento } from './documentos/documento.entity';
+import { DocumentosController } from './documentos/documentos.controller';
+import { BYTES_MAXIMOS_DOCUMENTO, DocumentosService } from './documentos/documentos.service';
+import { ClaudeResumidorDeCasos } from './resumen/claude.resumen-caso';
+import { ResumidorDeCasos } from './resumen/resumen-caso';
+import { ResumenCasoService } from './resumen/resumen-caso.service';
 import { SesionController } from './usuarios/sesion.controller';
 import { Sesion, Usuario } from './usuarios/usuario.entity';
 import { UsuariosService } from './usuarios/usuarios.service';
@@ -39,7 +48,7 @@ import { TramitesService } from './tramites/tramites.service';
 
 const PETICIONES_POR_MINUTO = 120;
 const VENTANA_MS = 60_000;
-const ENTIDADES = [Tramite, Actuacion, Evento, Buzon, CorreoPendiente, Credencial, AccesoPortal, Usuario, Sesion];
+const ENTIDADES = [Tramite, Actuacion, Evento, Buzon, CorreoPendiente, Credencial, AccesoPortal, Usuario, Sesion, Documento];
 
 @Module({
   providers: [{ provide: ENV, useFactory: () => cargarEnv() }],
@@ -57,7 +66,7 @@ class ConfigModule {}
         type: 'postgres' as const,
         url: env.DATABASE_URL,
         entities: ENTIDADES,
-        migrations: [Inicial1700000000000, Buzon1700000000001, Portales1700000000002, Usuarios1700000000003, Etapas1700000000004, Reclasificar1700000000005, CarpetasBuzon1700000000006, EtapaEventos1700000000007],
+        migrations: [Inicial1700000000000, Buzon1700000000001, Portales1700000000002, Usuarios1700000000003, Etapas1700000000004, Reclasificar1700000000005, CarpetasBuzon1700000000006, EtapaEventos1700000000007, Documentos1700000000008],
         migrationsRun: true,
         synchronize: false,
       }),
@@ -66,7 +75,7 @@ class ConfigModule {}
     ScheduleModule.forRoot(),
     ThrottlerModule.forRoot([{ ttl: VENTANA_MS, limit: PETICIONES_POR_MINUTO }]),
   ],
-  controllers: [TramitesController, SesionController],
+  controllers: [TramitesController, SesionController, DocumentosController],
   providers: [
     { provide: HTTP_FETCH, useValue: fetch },
     { provide: APP_FILTER, useClass: FiltroErrores },
@@ -86,6 +95,17 @@ class ConfigModule {}
     { provide: LectorBuzon, useClass: ImapLectorBuzon },
     BuzonService,
     Planificador,
+    { provide: AlmacenDocumentos, useClass: AlmacenConfigurado },
+    DocumentosService,
+    { provide: ResumidorDeCasos, useClass: ClaudeResumidorDeCasos },
+    ResumenCasoService,
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  /** La subida de documentos recibe el archivo tal cual en el cuerpo, no JSON. */
+  configure(consumidor: MiddlewareConsumer): void {
+    consumidor
+      .apply(raw({ type: ['application/pdf', 'image/png', 'image/jpeg', 'application/octet-stream'], limit: BYTES_MAXIMOS_DOCUMENTO }))
+      .forRoutes({ path: 'v1/tramites/:id/documentos', method: RequestMethod.POST });
+  }
+}
