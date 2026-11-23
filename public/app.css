@@ -60,5 +60,6 @@ dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margi
 .nombre-adjunto { flex: 1; min-width: 120px; overflow-wrap: anywhere; font-weight: 600; }
 button.enlace-oscuro { background: none; border: 0; padding: 0; color: var(--info); font-weight: 400; text-decoration: underline; text-align: left; }
 button.nombre-documento { font-weight: 600; } .derecha { text-align: right; white-space: nowrap; } .oculto { position: absolute; left: -9999px; }
+.nota-registros { font-size: 13px; margin: 0 0 10px; }
 .bloque-ia { margin-top: 8px; } .bloque-ia ul { margin: 4px 0 0; padding-left: 20px; } input[type=file] { width: auto; flex: 1; min-width: 200px; }
 @media (max-width: 640px) { .visor { padding: 0; } .visor-barra, .visor-paginas, .visor iframe, .visor-imagen { border-radius: 0; } .visor-barra { flex-wrap: wrap; } .ocultar-movil { display: none; } .barra .quien { width: 100%; margin: 0 0 10px; } }

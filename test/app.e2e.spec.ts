@@ -1047,7 +1047,7 @@ describe('Radika API', () => {
     // Se busca la primera y la segunda; la tercera no, porque la segunda aun no existe.
     expect(fuente.consultados).toEqual([primera, segunda]);
     let detalle = (await conLlave(api().get(`/v1/tramites/${tutela.id}`)).expect(200)).body.data;
-    expect(detalle.instancias).toEqual([{ numero: 0, radicado: primera, despacho: 'JUZGADO 011 DE FAMILIA', actuaciones: 2 }]);
+    expect(detalle.instancias).toEqual([{ numero: 0, radicado: primera, despacho: 'JUZGADO 011 DE FAMILIA', actuaciones: 2, registros: 1 }]);
     expect(detalle.situacion.etapa).toBe('FALLO_FAVORABLE');
 
     // El fallo se impugna: el proceso aparece ante el Tribunal con el radicado terminado en 01.
@@ -1062,9 +1062,15 @@ describe('Radika API', () => {
     await revisar();
     detalle = (await conLlave(api().get(`/v1/tramites/${tutela.id}`)).expect(200)).body.data;
     expect(detalle.instancias).toEqual([
-      { numero: 0, radicado: primera, despacho: 'JUZGADO 011 DE FAMILIA', actuaciones: 2 },
-      { numero: 1, radicado: segunda, despacho: 'SALA DE FAMILIA DEL TRIBUNAL', actuaciones: 2 },
+      { numero: 0, radicado: primera, despacho: 'JUZGADO 011 DE FAMILIA', actuaciones: 2, registros: 1 },
+      { numero: 1, radicado: segunda, despacho: 'SALA DE FAMILIA DEL TRIBUNAL', actuaciones: 2, registros: 1 },
     ]);
+
+    // El mismo despacho puede llevar la instancia en varios registros: se muestran juntos y se dice cuantos son.
+    fuente.procesos = [...fuente.procesos, { ...proceso('2026-05-13'), idFuente: '11', despacho: 'JUZGADO 011 DE FAMILIA' }];
+    fuente.actuacionesPorProceso[11] = [actuacion('1', '2026-05-29', 'Solicitud Impugnacion')];
+    await revisar();
+    expect((await conLlave(api().get(`/v1/tramites/${tutela.id}`))).body.data.instancias[0]).toMatchObject({ actuaciones: 3, registros: 2 });
     expect(detalle.situacion.etapa).toBe('FALLO_SEGUNDA_INSTANCIA');
     expect(detalle.tramite.despacho).toBe('JUZGADO 011 DE FAMILIA | SALA DE FAMILIA DEL TRIBUNAL');
     expect(detalle.actuaciones.map((item: { instancia: number }) => item.instancia)).toEqual([1, 1, 0, 0]);

@@ -56,13 +56,17 @@ export interface Instancia {
   readonly radicado: string;
   readonly despacho: string | null;
   readonly actuaciones: number;
+  /** Cuantos registros lleva la Rama Judicial para esta instancia; Radika los muestra juntos. */
+  readonly registros: number;
 }
 
 function agruparInstancias(radicado: string, actuaciones: ReadonlyArray<Actuacion>): Instancia[] {
   const numeros = [...new Set(actuaciones.map((actuacion) => actuacion.instancia).filter((numero): numero is number => numero !== null))].sort((a, b) => a - b);
   return numeros.map((numero) => {
     const propias = actuaciones.filter((actuacion) => actuacion.instancia === numero);
-    return { numero, radicado: radicadoDeInstancia(radicado, numero), despacho: propias.find((actuacion) => actuacion.despacho)?.despacho ?? null, actuaciones: propias.length };
+    // La clave de cada actuacion es "idProceso:idActuacion": cada idProceso distinto es un registro de la fuente.
+    const registros = new Set(propias.map((actuacion) => actuacion.claveFuente.split(':')[0])).size;
+    return { numero, radicado: radicadoDeInstancia(radicado, numero), despacho: propias.find((actuacion) => actuacion.despacho)?.despacho ?? null, actuaciones: propias.length, registros };
   });
 }
 

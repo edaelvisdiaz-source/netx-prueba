@@ -464,7 +464,10 @@ async function pantallaDetalle(id) {
     elegirInstancia.addEventListener('change', pintarLista);
     pintarLista();
     const tarjetaActuaciones = h('div', { class: 'tarjeta' }, h('div', { class: 'fila entre' }, h('h2', {}, `Actuaciones (${d.actuaciones.length})`), variasInstancias ? chip(`${d.instancias.length} instancias`, 'info') : null),
-      variasInstancias ? h('div', { class: 'campo' }, elegirInstancia) : null, listaActuaciones);
+      variasInstancias ? h('div', { class: 'campo' }, elegirInstancia) : null,
+      d.instancias.filter((i) => i.registros > 1).map((i) => h('p', { class: 'tenue nota-registros' },
+        `${variasInstancias ? `${nombreInstancia(i.numero)}: l` : 'L'}a Rama Judicial lleva este proceso en ${i.registros} registros del mismo despacho. Radika los muestra juntos.`)),
+      listaActuaciones);
 
     const botonDatos = h('button', { type: 'submit', class: 'secundario' }, 'Guardar');
     const mensajeDatos = h('div');
