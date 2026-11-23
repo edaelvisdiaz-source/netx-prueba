@@ -1,7 +1,7 @@
 import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn } from 'typeorm';
 
 export const TIPOS_EVENTO = [
-  'TRAMITE_SINCRONIZADO', 'ACTUACION_NUEVA', 'TERMINO_POR_VENCER', 'TERMINO_VENCIDO', 'ERROR_FUENTE',
+  'TRAMITE_SINCRONIZADO', 'ACTUACION_NUEVA', 'TERMINO_POR_VENCER', 'TERMINO_VENCIDO', 'ERROR_FUENTE', 'ETAPA_CAMBIADA',
 ] as const;
 export type TipoEvento = (typeof TIPOS_EVENTO)[number];
 export type EstadoEvento = 'PENDIENTE' | 'ENTREGADO' | 'FALLIDO';

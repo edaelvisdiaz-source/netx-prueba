@@ -15,7 +15,7 @@ const CATEGORIAS = {
 };
 const NOVEDADES = {
   TRAMITE_SINCRONIZADO: 'Primera lectura', ACTUACION_NUEVA: 'Actuación nueva', TERMINO_POR_VENCER: 'Término por vencer',
-  TERMINO_VENCIDO: 'Término vencido', ERROR_FUENTE: 'Problema al consultar',
+  TERMINO_VENCIDO: 'Término vencido', ERROR_FUENTE: 'Problema al consultar', ETAPA_CAMBIADA: 'Cambio de etapa',
 };
 const TERMINOS = { EN_CURSO: ['En curso', 'info'], POR_VENCER: ['Por vencer', 'aviso-c'], VENCIDO: ['Vencido', 'mal'], CUMPLIDO: ['Cumplido', 'ok'] };
 const ETAPAS = {
@@ -364,10 +364,12 @@ async function pantallaNovedades() {
     lista.replaceChildren(...data.map((n) => {
       const tramite = n.payload.tramite || {};
       const datos = n.payload.datos || {};
-      const texto = datos.notaSugerida || (datos.termino && `${datos.termino.descripcion} — límite ${fecha(datos.termino.fechaLimite)}`) || datos.mensaje || (datos.estado && `Estado: ${datos.estado}`) || (datos.actuaciones !== undefined && `${datos.actuaciones} actuación(es) encontradas`) || '';
+      const etapaDe = (clave) => (ETAPAS[clave] ? ETAPAS[clave][0] : clave);
+      const cambioEtapa = n.tipo === 'ETAPA_CAMBIADA' ? `${etapaDe(datos.etapaAnterior)} → ${etapaDe(datos.etapa)}${datos.manual ? ' (fijada a mano)' : ''}${datos.recomendacion ? `. ${datos.recomendacion}` : ''}` : '';
+      const texto = cambioEtapa || datos.notaSugerida || (datos.termino && `${datos.termino.descripcion} — límite ${fecha(datos.termino.fechaLimite)}`) || datos.mensaje || (datos.estado && `Estado: ${datos.estado}`) || (datos.actuaciones !== undefined && `${datos.actuaciones} actuación(es) encontradas`) || '';
       return h('div', { class: 'linea' }, h('div', { class: 'fecha' }, fechaHora(n.createdAt)),
         h('div', { class: 'titulo' }, chip(NOVEDADES[n.tipo] || n.tipo, n.tipo === 'ERROR_FUENTE' || n.tipo === 'TERMINO_VENCIDO' ? 'mal' : n.tipo === 'TERMINO_POR_VENCER' ? 'aviso-c' : 'info'), ' ',
-          h('a', { href: `#/tramites/${tramite.id}` }, `${TIPOS[tramite.tipo] || 'Trámite'} ${tramite.clienteNombre ? `· ${tramite.clienteNombre}` : ''}`)),
+          h('a', { href: `#/tramites/${tramite.id}` }, `${TIPOS[tramite.tipo] || 'Trámite'} ${tramite.clienteNombre || datos.tutelante ? `· ${tramite.clienteNombre || datos.tutelante}` : ''}`)),
         h('div', { class: 'tenue mono' }, tramite.radicado || ''), texto ? h('div', {}, texto) : null);
     }));
   }).catch((error) => (error.codigoHttp === 401 ? salirLocal() : lista.replaceChildren(aviso(error.message, 'mal'))));

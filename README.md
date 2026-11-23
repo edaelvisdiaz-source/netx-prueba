@@ -210,6 +210,7 @@ puede leer lo mismo en `GET /v1/eventos`.
 | `TERMINO_POR_VENCER` | Faltan 2 días hábiles o menos para un término de tutela |
 | `TERMINO_VENCIDO` | El juez no falló dentro de los 10 días hábiles |
 | `ERROR_FUENTE` | Cinco revisiones seguidas fallaron para ese trámite |
+| `ETAPA_CAMBIADA` | La tutela pasó de una etapa a otra (automática o fijada a mano). Trae `etapaAnterior`, `etapa`, `manual`, `nota` y `recomendacion` |
 
 `notaSugerida` está pensada para guardarse como nota de la venta en Seguimiento.
 

@@ -15,6 +15,7 @@ import { Actuacion } from '../tramites/actuacion.entity';
 import { esRemitenteConfiable, extraerPistas, PistasRadicado, tituloDesdeAsunto } from '../correo/analizar-correo';
 import { CorreoEntrante, RegistrarActuacion } from '../tramites/dto';
 import { clasificarActuacion } from '../tramites/clasificacion';
+import { calcularSituacion } from '../tramites/situacion';
 import { Tramite } from '../tramites/tramite.entity';
 import { TramitesService } from '../tramites/tramites.service';
 
@@ -95,6 +96,38 @@ export class MonitorService {
 
   /** Consulta la fuente, guarda las actuaciones que no estaban y deja los avisos para el CRM. */
   async revisar(tramiteId: string): Promise<ResultadoRevision> {
+    const resultado = await this.consultar(tramiteId);
+    await this.actualizarEtapa(tramiteId);
+    return resultado;
+  }
+
+  /**
+   * Guarda la etapa en que quedo el tramite y, si cambio, deja el aviso. La primera etapa conocida
+   * no se avisa: de eso ya informa la primera lectura.
+   */
+  async actualizarEtapa(tramiteId: string): Promise<void> {
+    const tramite = await this.tramites.findOneBy({ id: tramiteId });
+    if (!tramite || tramite.tipo !== 'TUTELA') return;
+    const actuaciones = await this.actuaciones.find({ where: { tramiteId } });
+    const situacion = calcularSituacion({ ...tramite, actuaciones, hoy: hoyEnColombia() });
+    const anterior = tramite.etapa;
+    if (situacion.etapa === null || situacion.etapa === anterior) return;
+    await this.dataSource.transaction(async (em) => {
+      // Solo avisa quien logra el cambio: dos revisiones a la vez no duplican el aviso.
+      const cambio = await em.update(Tramite, { id: tramiteId, etapa: anterior ?? IsNull() }, { etapa: situacion.etapa });
+      if (!cambio.affected || anterior === null || anterior === 'SIN_DATOS') return;
+      await this.eventos.registrar(em, {
+        tramite,
+        tipo: 'ETAPA_CAMBIADA',
+        datos: {
+          etapaAnterior: anterior, etapa: situacion.etapa, manual: situacion.esManual, tutelante: situacion.tutelante,
+          nota: situacion.nota, recomendacion: situacion.recomendacion,
+        },
+      });
+    });
+  }
+
+  private async consultar(tramiteId: string): Promise<ResultadoRevision> {
     const tramite = await this.tramitesService.obtener(tramiteId);
     if (tramite.fuente === 'MANUAL') {
       throw new BadRequestException('Este tramite es de seguimiento manual; aun no tiene consulta automatica');
@@ -226,7 +259,7 @@ export class MonitorService {
     });
     const categoria = clasificarActuacion(encontrada.titulo, null);
     const resumen = (await this.resumir(tramite, [encontrada], existentes)).get(encontrada.clave) ?? null;
-    return this.dataSource.transaction(async (em) => {
+    const guardadaFinal = await this.dataSource.transaction(async (em) => {
       const guardada = await em.save(
         em.create(Actuacion, {
           tramiteId,
@@ -260,6 +293,8 @@ export class MonitorService {
       });
       return guardada;
     });
+    await this.actualizarEtapa(tramiteId);
+    return guardadaFinal;
   }
 
   /** Toma los tramites a los que ya les toca revision y los revisa uno por uno. */

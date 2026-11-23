@@ -242,7 +242,10 @@ describe('Radika API', () => {
     ]);
 
     const eventos = (await conLlave(api().get('/v1/eventos')).expect(200)).body.data.eventos;
-    expect(eventos.map((evento: { tipo: string }) => evento.tipo)).toEqual(['TRAMITE_SINCRONIZADO', 'ACTUACION_NUEVA']);
+    expect(eventos.map((evento: { tipo: string }) => evento.tipo)).toEqual(['TRAMITE_SINCRONIZADO', 'ACTUACION_NUEVA', 'ETAPA_CAMBIADA']);
+    // La etapa que trae la primera lectura no se avisa; el fallo posterior si.
+    expect(eventos[2].payload.datos).toMatchObject({ etapaAnterior: 'ADMITIDA', etapa: 'FALLO_SIN_CLASIFICAR', manual: false, tutelante: 'A' });
+    expect(eventos[2].payload.datos.recomendacion).toContain('sentencia');
     expect(eventos[1].payload).toMatchObject({
       tramite: { referenciaCrm: 'E4MXO9T4', radicado: RADICADO },
       datos: { actuacion: { categoria: 'FALLO' }, notaSugerida: expect.stringContaining('Sentencia') },
@@ -377,7 +380,8 @@ describe('Radika API', () => {
     const primera = (await conLlave(api().get('/v1/eventos?limit=2')).expect(200)).body.data;
     expect(primera.eventos).toHaveLength(2);
     const segunda = (await conLlave(api().get(`/v1/eventos?limit=2&cursor=${encodeURIComponent(primera.siguiente)}`)).expect(200)).body.data;
-    expect(segunda.eventos).toHaveLength(1);
+    // Sincronizacion, dos actuaciones y el paso de radicada a admitida.
+    expect(segunda.eventos.map((evento: { tipo: string }) => evento.tipo)).toEqual(['ACTUACION_NUEVA', 'ETAPA_CAMBIADA']);
     const vacia = (await conLlave(api().get(`/v1/eventos?cursor=${encodeURIComponent(segunda.siguiente)}`))).body.data;
     expect(vacia).toEqual({ eventos: [], siguiente: null });
     await conLlave(api().get('/v1/eventos?cursor=malo')).expect(400);
@@ -819,6 +823,8 @@ describe('Radika API', () => {
     const manual = (await conLlave(api().get(`/v1/tramites/${tramite.id}`)).expect(200)).body.data;
     expect(manual.situacion).toMatchObject({ etapa: 'CUMPLIDA', etapaAutomatica: 'FALLO_DESFAVORABLE', esManual: true, nivel: null });
     expect(manual.tramite.nota).toBe('El Ministerio ya expidio la resolucion');
+    const cambios = await datos.query(`SELECT payload->'datos' AS d FROM eventos WHERE tipo = 'ETAPA_CAMBIADA'`);
+    expect(cambios).toEqual([{ d: expect.objectContaining({ etapaAnterior: 'FALLO_DESFAVORABLE', etapa: 'CUMPLIDA', manual: true }) }]);
     expect((await conLlave(api().get('/v1/panel')).expect(200)).body.data.totales).toMatchObject({ urgentes: 0, alDia: 1 });
 
     await conLlave(api().patch(`/v1/tramites/${tramite.id}`)).send({ etapaManual: null }).expect(200);

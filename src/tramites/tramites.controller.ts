@@ -74,6 +74,7 @@ export class TramitesController {
     const actualizado = await this.tramites.actualizar(id, cambios);
     // Un tramite cerrado ya no necesita la clave del cliente: se borra.
     if (cambios.estado === 'CERRADO') await this.boveda.eliminar(id);
+    if (cambios.etapaManual !== undefined) await this.monitor.actualizarEtapa(id);
     return ok(actualizado);
   }
 

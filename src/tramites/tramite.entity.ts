@@ -13,6 +13,8 @@ export class Tramite {
   @Column({ name: 'referencia_crm', type: 'text', nullable: true }) referenciaCrm!: string | null;
   @Column({ name: 'cliente_nombre', type: 'text', nullable: true }) clienteNombre!: string | null;
   @Column({ type: 'text', default: 'ACTIVO' }) estado!: EstadoTramite;
+  /** Ultima etapa conocida (calculada o manual). Sirve para avisar cuando cambia; al leer siempre se recalcula. */
+  @Column({ type: 'text', nullable: true }) etapa!: Etapa | null;
   /** Etapa fijada por una persona. Mientras exista, reemplaza a la que Radika calcula. */
   @Column({ name: 'etapa_manual', type: 'text', nullable: true }) etapaManual!: Etapa | null;
   @Column({ name: 'etapa_manual_at', type: 'timestamptz', nullable: true }) etapaManualAt!: Date | null;
