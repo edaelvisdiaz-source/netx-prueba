@@ -8,18 +8,34 @@ export interface CorreoLeido {
   readonly adjuntos: ReadonlyArray<string>;
 }
 
-export interface LecturaBuzon {
-  /** Cambia si el servidor reorganiza el buzon; entonces los UID anteriores dejan de valer. */
+/** Hasta donde se leyo una carpeta la ultima vez. */
+export interface PuntoDeLectura {
+  readonly uidValidity: string;
+  readonly ultimoUid: number;
+}
+
+export interface LecturaCarpeta {
+  readonly carpeta: string;
+  /** Cambia si el servidor reorganiza la carpeta; entonces los UID anteriores dejan de valer. */
   readonly uidValidity: string;
   /** UID mas alto que existe hoy en la carpeta. */
   readonly uidMaximo: number;
+  /** Vacio si la carpeta es nueva para Radika o fue renumerada: primero se fija el punto de partida. */
   readonly correos: ReadonlyArray<CorreoLeido>;
 }
 
-/** Acceso de solo lectura al buzon donde llegan las notificaciones. */
+/** Acceso de solo lectura al buzon donde llegan las notificaciones. Nunca mueve, marca ni borra. */
 export abstract class LectorBuzon {
   /** Direccion del buzon, o `null` si no esta configurado. */
   abstract readonly buzon: string | null;
-  /** Encabezados de los correos con UID mayor que `ultimoUid`, en orden. No lee el cuerpo ni marca nada. */
-  abstract leerDesde(ultimoUid: number, maximo: number): Promise<LecturaBuzon>;
+  /**
+   * Recorre las carpetas vigiladas y devuelve, de cada una, los encabezados de los correos
+   * posteriores a su punto de lectura (hasta `maximo` por carpeta), en orden.
+   */
+  abstract leer(puntos: ReadonlyMap<string, PuntoDeLectura>, maximo: number): Promise<LecturaCarpeta[]>;
+  /**
+   * Texto del cuerpo y de los PDF adjuntos de un correo. Se usa solo para buscar el radicado
+   * cuando el asunto no lo trae; quien lo pide no debe guardarlo.
+   */
+  abstract leerContenido(carpeta: string, uid: number): Promise<string>;
 }

@@ -382,12 +382,22 @@ async function pantallaCorreos() {
       h('tbody', {}, data.map((c) => {
         const boton = h('button', { class: 'secundario', type: 'button' }, 'Ya lo revisé');
         const mensaje = h('div');
-        boton.addEventListener('click', () => conBoton(boton, mensaje, async () => { await api('DELETE', `/v1/correos/pendientes/${c.id}`); cargar(); }));
-        return h('tr', {}, h('td', {}, h('div', {}, c.asunto), h('div', { class: 'tenue' }, `${c.remitenteNombre || c.remitente} · ${fechaHora(c.fecha)}`)), h('td', {}, MOTIVOS[c.motivo] || c.motivo), h('td', {}, boton, mensaje));
+        const descartar = () => api('DELETE', `/v1/correos/pendientes/${c.id}`);
+        boton.addEventListener('click', () => conBoton(boton, mensaje, async () => { await descartar(); cargar(); }));
+        const registrar = c.radicadoSugerido ? h('button', { type: 'button' }, 'Registrar tutela') : null;
+        if (registrar) registrar.addEventListener('click', () => conBoton(registrar, mensaje, async () => {
+          const creado = (await api('POST', '/v1/tramites', { tipo: 'TUTELA', radicado: c.radicadoSugerido })).data;
+          await api('POST', `/v1/tramites/${creado.id}/revisar`).catch(() => null);
+          await descartar();
+          location.hash = `#/tramites/${creado.id}`;
+        }));
+        return h('tr', {}, h('td', {}, h('div', {}, c.asunto), h('div', { class: 'tenue' }, [c.remitenteNombre || c.remitente, fechaHora(c.fecha), c.carpeta].filter(Boolean).join(' · '))),
+          h('td', {}, MOTIVOS[c.motivo] || c.motivo, c.radicadoSugerido ? h('div', { class: 'mono tenue' }, `Radicado encontrado: ${c.radicadoSugerido}`) : null),
+          h('td', {}, h('div', { class: 'fila' }, registrar, boton), mensaje));
       }))));
   }).catch((error) => (error.codigoHttp === 401 ? salirLocal() : lista.replaceChildren(aviso(error.message, 'mal'))));
   cargar();
-  return h('main', {}, h('h1', {}, 'Correos sin asociar'), h('p', { class: 'tenue' }, 'Correos de juzgados que Radika no pudo enlazar con un trámite. Casi siempre falta registrar la tutela.'), lista);
+  return h('main', {}, h('h1', {}, 'Correos sin asociar'), h('p', { class: 'tenue' }, 'Correos de juzgados que Radika no pudo enlazar con un trámite. Si Radika encontró el radicado en el correo o en el acta de reparto, puedes registrar la tutela con un clic.'), lista);
 }
 
 async function pantallaUsuarios() {

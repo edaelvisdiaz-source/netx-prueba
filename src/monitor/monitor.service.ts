@@ -43,7 +43,12 @@ type ActuacionEncontrada = ActuacionFuente & { readonly despacho: string | null 
 
 export type ResultadoCorreo =
   | { readonly vinculado: true; readonly tramiteId: string; readonly duplicado: boolean }
-  | { readonly vinculado: false; readonly motivo: 'REMITENTE_NO_CONFIABLE' | 'SIN_RADICADO' | 'SIN_TRAMITE' | 'AMBIGUO' };
+  | {
+      readonly vinculado: false;
+      readonly motivo: 'REMITENTE_NO_CONFIABLE' | 'SIN_RADICADO' | 'SIN_TRAMITE' | 'AMBIGUO';
+      /** Radicado completo hallado en el correo cuando aun no hay tramite con el. */
+      readonly radicadoSugerido?: string;
+    };
 
 export interface ResultadoRevision {
   readonly tramiteId: string;
@@ -161,10 +166,15 @@ export class MonitorService {
     if (!esRemitenteConfiable(correo.from, this.env.CORREO_DOMINIOS_CONFIABLES)) {
       return { vinculado: false, motivo: 'REMITENTE_NO_CONFIABLE' };
     }
-    const pistas = extraerPistas([correo.subject, ...(correo.adjuntos ?? []), correo.texto ?? ''].join('\n'));
+    const deEncabezados = extraerPistas([correo.subject, ...(correo.adjuntos ?? [])].join('\n'));
+    // Del cuerpo y los adjuntos solo vale un radicado completo y unico: un correo puede citar otros
+    // procesos, y quien falsifica un remitente podria esconder alli el numero de un caso ajeno.
+    const delTexto = extraerPistas(correo.texto ?? '').completos.filter((radicado) => !deEncabezados.completos.includes(radicado));
+    const pistas = { ...deEncabezados, completos: [...deEncabezados.completos, ...(delTexto.length === 1 ? delTexto : [])] };
     const tramite = await this.buscarPorPistas(pistas);
     if (tramite === 'AMBIGUO' || tramite === 'SIN_RADICADO' || tramite === 'SIN_TRAMITE') {
-      return { vinculado: false, motivo: tramite };
+      const sugerido = tramite === 'SIN_TRAMITE' && pistas.completos.length === 1 ? { radicadoSugerido: pistas.completos[0] } : {};
+      return { vinculado: false, motivo: tramite, ...sugerido };
     }
     const clave = `correo:${correo.messageId}`;
     const yaExiste = await this.actuaciones.existsBy({ tramiteId: tramite.id, claveFuente: clave });

@@ -29,6 +29,7 @@ import { Tramite } from './tramites/tramite.entity';
 import { Usuarios1700000000003 } from './migrations/1700000000003-usuarios';
 import { Etapas1700000000004 } from './migrations/1700000000004-etapas';
 import { Reclasificar1700000000005 } from './migrations/1700000000005-reclasificar';
+import { CarpetasBuzon1700000000006 } from './migrations/1700000000006-carpetas-buzon';
 import { SesionController } from './usuarios/sesion.controller';
 import { Sesion, Usuario } from './usuarios/usuario.entity';
 import { UsuariosService } from './usuarios/usuarios.service';
@@ -55,7 +56,7 @@ class ConfigModule {}
         type: 'postgres' as const,
         url: env.DATABASE_URL,
         entities: ENTIDADES,
-        migrations: [Inicial1700000000000, Buzon1700000000001, Portales1700000000002, Usuarios1700000000003, Etapas1700000000004, Reclasificar1700000000005],
+        migrations: [Inicial1700000000000, Buzon1700000000001, Portales1700000000002, Usuarios1700000000003, Etapas1700000000004, Reclasificar1700000000005, CarpetasBuzon1700000000006],
         migrationsRun: true,
         synchronize: false,
       }),

@@ -8,7 +8,7 @@ import { AppModule } from '../src/app.module';
 import { BovedaService, CredencialPortal } from '../src/boveda/boveda.service';
 import { ENV, Env } from '../src/config/env';
 import { BuzonService } from '../src/correo/buzon.service';
-import { CorreoLeido, LectorBuzon, LecturaBuzon } from '../src/correo/lector-buzon';
+import { CorreoLeido, LectorBuzon, LecturaCarpeta, PuntoDeLectura } from '../src/correo/lector-buzon';
 import { ActuacionFuente, Fuente, FuenteError, ProcesoFuente } from '../src/fuentes/fuente';
 import { EstadoPortal, FuentePortal, PORTALES, PortalError } from '../src/fuentes/fuente-portal';
 import { RamaJudicialFuente } from '../src/fuentes/rama-judicial.fuente';
@@ -68,14 +68,28 @@ class LectorFalso extends LectorBuzon {
   buzon: string | null = 'asesor@empresa.test';
   uidValidity = '1';
   correos: CorreoLeido[] = [];
+  /** Correos de otras carpetas, por nombre de carpeta. */
+  otras: Record<string, CorreoLeido[]> = {};
+  contenidos: Record<number, string> = {};
+  abiertos: number[] = [];
 
-  async leerDesde(ultimoUid: number, maximo: number): Promise<LecturaBuzon> {
-    const uidMaximo = this.correos.reduce((mayor, correo) => Math.max(mayor, correo.uid), 0);
-    return {
-      uidValidity: this.uidValidity,
-      uidMaximo,
-      correos: this.correos.filter((correo) => correo.uid > ultimoUid && correo.uid <= ultimoUid + maximo),
-    };
+  async leer(puntos: ReadonlyMap<string, PuntoDeLectura>, maximo: number): Promise<LecturaCarpeta[]> {
+    return Object.entries({ INBOX: this.correos, ...this.otras }).map(([carpeta, correos]) => {
+      const punto = puntos.get(carpeta);
+      const vigente = punto?.uidValidity === this.uidValidity ? punto : undefined;
+      return {
+        carpeta,
+        uidValidity: this.uidValidity,
+        uidMaximo: correos.reduce((mayor, correo) => Math.max(mayor, correo.uid), 0),
+        correos: vigente ? correos.filter((correo) => correo.uid > vigente.ultimoUid && correo.uid <= vigente.ultimoUid + maximo) : [],
+      };
+    });
+  }
+
+  async leerContenido(_carpeta: string, uid: number): Promise<string> {
+    this.abiertos.push(uid);
+    if (uid === 99) throw new Error('correo ilegible');
+    return this.contenidos[uid] ?? '';
   }
 }
 
@@ -475,7 +489,12 @@ describe('Radika API', () => {
 
     const respuesta = await correo('RE: Solicitud urgente de información – Acción de Tutela Rad. 11001311002020260077500');
     expect(respuesta.body.data).toMatchObject({ vinculado: true, tramiteId: familia.id });
-    const porTexto = await correo('NOTIFICA AUTO', { texto: 'Tutela 2026-09795 en este despacho' });
+    // Del texto solo vale un radicado completo y unico; una pista suelta o dos radicados no enlazan.
+    const pistaSuelta = await correo('NOTIFICA AUTO', { texto: 'Tutela 2026-09795 en este despacho' });
+    expect(pistaSuelta.body.data).toEqual({ vinculado: false, motivo: 'SIN_RADICADO' });
+    const dosRadicados = await correo('NOTIFICA AUTO', { texto: 'Rad. 11001310901720260979500, ver tambien 11001311002020260077500' });
+    expect(dosRadicados.body.data).toEqual({ vinculado: false, motivo: 'SIN_RADICADO' });
+    const porTexto = await correo('NOTIFICA AUTO', { texto: 'Radicado: 11001-31-09-017-2026-09795-00 en este despacho' });
     expect(porTexto.body.data).toMatchObject({ vinculado: true, tramiteId: penal.id });
 
     const detalle = (await conLlave(api().get(`/v1/tramites/${penal.id}`))).body.data;
@@ -491,7 +510,7 @@ describe('Radika API', () => {
     await crearTutela('05001310901720260979500');
     expect((await correo('Tutela 2026-09795 nueva actuacion', { texto: 'x' })).body.data).toEqual({ vinculado: false, motivo: 'AMBIGUO' });
     expect((await correo('Cordial saludo')).body.data).toEqual({ vinculado: false, motivo: 'SIN_RADICADO' });
-    expect((await correo('Rad. 76001310300120260000100')).body.data).toEqual({ vinculado: false, motivo: 'SIN_TRAMITE' });
+    expect((await correo('Rad. 76001310300120260000100')).body.data).toEqual({ vinculado: false, motivo: 'SIN_TRAMITE', radicadoSugerido: '76001310300120260000100' });
     const falso = await correo('NOTIFICA FALLO 11001311002020260077500', { from: 'juez@ramajudicial.gov.co.estafa.com' });
     expect(falso.body.data).toEqual({ vinculado: false, motivo: 'REMITENTE_NO_CONFIABLE' });
     await correo('x', { date: 'ayer' }).expect(400);
@@ -529,10 +548,66 @@ describe('Radika API', () => {
     lector.uidValidity = '2';
     lector.correos = [correo(1, juzgado, 'NOTIFICA FALLO TUTELA 110013109017-2026 - 9795')];
     expect(await buzon.sincronizar()).toEqual({ leidos: 0, vinculados: 0, pendientes: 0 });
-    expect(await datos.query('SELECT uid_validity, ultimo_uid FROM buzones')).toEqual([{ uid_validity: '2', ultimo_uid: 1 }]);
+    expect(await datos.query('SELECT carpeta, uid_validity, ultimo_uid FROM buzones')).toEqual([{ carpeta: 'INBOX', uid_validity: '2', ultimo_uid: 1 }]);
 
     lector.buzon = null;
     expect(await buzon.sincronizar()).toEqual({ leidos: 0, vinculados: 0, pendientes: 0 });
+  });
+
+  test('vigila varias carpetas y abre el correo solo cuando el asunto no trae el radicado', async () => {
+    const buzon = app.get(BuzonService);
+    const reparto = 'reparto@cendoj.ramajudicial.gov.co';
+    const correo = (uid: number, subject: string, from = reparto): CorreoLeido => ({
+      uid, from, subject, messageId: `<c${uid}@correo.test>`, fromNombre: 'Oficina de Reparto', date: '2026-11-11T21:54:06Z', adjuntos: [],
+    });
+    const tutela = await crearTutela('11001310901720260979500');
+    Object.assign(lector, { buzon: 'asesor@empresa.test', uidValidity: '7', correos: [], otras: { 'INBOX.REPARTO': [correo(1, 'viejo')] }, contenidos: {}, abiertos: [] });
+    expect(await buzon.sincronizar()).toEqual({ leidos: 0, vinculados: 0, pendientes: 0 });
+
+    lector.otras = {
+      'INBOX.REPARTO': [
+        correo(1, 'viejo'),
+        correo(2, 'Generación de Tutela en línea No 3245678'),
+        correo(3, 'Generación de Tutela en línea No 3245999'),
+        correo(4, 'SAMAI: Notificación RAD 2026-09795-00 Sentencia', 'samai@notificacionesrj.gov.co'),
+        correo(5, 'Generación de Tutela en línea No 1'),
+        correo(99, 'Generación de Tutela en línea No 2'),
+        correo(100, 'Generación de Tutela en línea No 3', 'alguien@otro.com'),
+      ],
+      'INBOX.Fallos': [],
+    };
+    lector.contenidos = {
+      2: 'Se asignó al Juzgado 17. Radicado: 11001-31-09-017-2026-09795-00. Accionante ...',
+      3: 'ACTA DE REPARTO\nNúmero de radicación 11001 40 03 009 2026 00882 00\nGrupo: tutelas',
+    };
+    // La carpeta Fallos es nueva: fija su punto de partida. En REPARTO se leen los seis correos nuevos.
+    expect(await buzon.sincronizar()).toEqual({ leidos: 6, vinculados: 2, pendientes: 3 });
+    // Solo se abrieron los que no traian radicado en el asunto y venian de un despacho.
+    expect(lector.abiertos).toEqual([2, 3, 5, 99]);
+    expect(await datos.query('SELECT titulo FROM actuaciones WHERE tramite_id = $1 ORDER BY titulo', [tutela.id])).toEqual([
+      { titulo: 'Generación de Tutela en línea No 3245678' },
+      { titulo: 'SAMAI: Notificación RAD 2026-09795-00 Sentencia' },
+    ]);
+    const pendientes = (await conLlave(api().get('/v1/correos/pendientes')).expect(200)).body.data;
+    expect(pendientes.map((p: { asunto: string }) => p.asunto).sort()).toEqual([
+      'Generación de Tutela en línea No 1', 'Generación de Tutela en línea No 2', 'Generación de Tutela en línea No 3245999',
+    ]);
+    expect(pendientes.find((p: { motivo: string }) => p.motivo === 'SIN_TRAMITE')).toMatchObject({
+      radicadoSugerido: '11001400300920260088200', carpeta: 'INBOX.REPARTO',
+    });
+    // El contenido del correo no queda guardado en ninguna parte.
+    const guardado = JSON.stringify(await datos.query('SELECT * FROM actuaciones UNION ALL SELECT * FROM actuaciones WHERE false'))
+      + JSON.stringify(await datos.query('SELECT * FROM correos_pendientes')) + JSON.stringify(await datos.query('SELECT payload FROM eventos'));
+    expect(guardado).not.toContain('Se asignó al Juzgado');
+    expect(guardado).not.toContain('ACTA DE REPARTO');
+
+    // El mismo correo movido a otra carpeta no se cuenta dos veces.
+    lector.otras['INBOX.Fallos'] = [correo(3, 'Generación de Tutela en línea No 3245999'), correo(2, 'Generación de Tutela en línea No 3245678')];
+    lector.contenidos = { ...lector.contenidos, 2: lector.contenidos[2] };
+    expect(await buzon.sincronizar()).toEqual({ leidos: 2, vinculados: 1, pendientes: 0 });
+    expect(await datos.query('SELECT count(*)::int AS n FROM actuaciones WHERE tramite_id = $1', [tutela.id])).toEqual([{ n: 2 }]);
+    expect(await datos.query('SELECT count(*)::int AS n FROM correos_pendientes')).toEqual([{ n: 3 }]);
+    Object.assign(lector, { uidValidity: '1', correos: [], otras: {}, contenidos: {}, abiertos: [] });
   });
 
   test('guarda la credencial cifrada, nunca la devuelve y revisa el portal del Ministerio', async () => {

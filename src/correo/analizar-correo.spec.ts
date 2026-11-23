@@ -23,6 +23,31 @@ describe('correos de juzgados', () => {
     expect(extraerPistas('Celular 3001234567 y fecha 2026-11-20')).toEqual({ completos: [], prefijos: [], anoConsecutivo: [] });
   });
 
+  test('radicado con espacios, puntos o rayas largas entre los grupos', () => {
+    expect(extraerPistas('TUTELA 11001 31 03 022 2026 00625 00 ADMITE').completos).toEqual(['11001310302220260062500']);
+    expect(extraerPistas('Rad. 11001–31–03–022–2026–00625–00').completos).toEqual(['11001310302220260062500']);
+    expect(extraerPistas('Rad: 11001 - 31 - 03 - 022 - 2026 - 00625 - 00').completos).toEqual(['11001310302220260062500']);
+    expect(extraerPistas('Exp. 11001.31.03.022.2026.00625.00').completos).toEqual(['11001310302220260062500']);
+  });
+
+  test('radicado de 21 digitos, sin el numero de instancia', () => {
+    expect(extraerPistas('NOTIFICA AUTO 11001-33-35-012-2026-00441 TUTELA')).toEqual({ completos: [], prefijos: ['110013335012202600441'], anoConsecutivo: [] });
+    expect(extraerPistas('Proceso 110013335012202600441.').prefijos).toEqual(['110013335012202600441']);
+  });
+
+  test('numero del juzgado abreviado y avisos de SAMAI', () => {
+    expect(extraerPistas('FALLO TUTELA 022-2026-00625-00 ACCIONANTE')).toEqual({ completos: [], prefijos: [], anoConsecutivo: ['202600625'] });
+    expect(extraerPistas('SAMAI: Notificación RAD 2026-00517-00 Sentencia')).toEqual({ completos: [], prefijos: [], anoConsecutivo: ['202600517'] });
+    expect(extraerPistas('TUTELA 2026 – 00517').anoConsecutivo).toEqual(['202600517']);
+  });
+
+  test('no confunde fechas, telefonos ni numeros de solicitud con radicados', () => {
+    const nada = { completos: [], prefijos: [], anoConsecutivo: [] };
+    expect(extraerPistas('Generación de Tutela en línea No 3245678')).toEqual(nada);
+    expect(extraerPistas('Audiencia 2026-11-20 10:00, tel 601 3532666 ext 2026')).toEqual(nada);
+    expect(extraerPistas('Oficio 2026-EE-426257 del 20-11-2026')).toEqual(nada);
+  });
+
   test('titulo sin prefijos de respuesta', () => {
     expect(tituloDesdeAsunto('RE: RV:  NOTIFICA  AUTO AVOCA TUTELA')).toBe('NOTIFICA AUTO AVOCA TUTELA');
     expect(tituloDesdeAsunto('RE: ')).toBe('Correo del despacho');

@@ -33,14 +33,19 @@ const esquema = z
     /** Dominios desde los que se aceptan correos de despachos (incluye sus subdominios). */
     CORREO_DOMINIOS_CONFIABLES: z
       .string()
-      .default('ramajudicial.gov.co,consejodeestado.gov.co,corteconstitucional.gov.co')
+      .default('ramajudicial.gov.co,notificacionesrj.gov.co,consejodeestado.gov.co,corteconstitucional.gov.co')
       .transform((valor) => valor.split(',').map((dominio) => dominio.trim().toLowerCase()).filter(Boolean)),
     /** Buzon donde llegan las notificaciones. Sin estos tres datos el lector queda apagado. */
     IMAP_HOST: z.string().min(3).optional().or(z.literal('').transform(() => undefined)),
     IMAP_PORT: z.coerce.number().int().min(1).max(65535).default(993),
     IMAP_USER: z.string().email().optional().or(z.literal('').transform(() => undefined)),
     IMAP_PASSWORD: z.string().min(1).optional().or(z.literal('').transform(() => undefined)),
-    IMAP_CARPETA: z.string().min(1).default('INBOX'),
+    /** Carpetas a vigilar, separadas por coma. Si falta, se vigilan todas menos enviados, borradores, papelera y spam. */
+    IMAP_CARPETAS: z
+      .string()
+      .optional()
+      .transform((valor) => valor?.split(',').map((carpeta) => carpeta.trim()).filter(Boolean))
+      .transform((carpetas) => (carpetas?.length ? carpetas : undefined)),
     /** Llave de 32 bytes en base64 para cifrar las credenciales de los portales (openssl rand -base64 32). */
     CREDENCIALES_LLAVE: z.string().min(40).optional().or(z.literal('').transform(() => undefined)),
     /** Llaves anteriores, separadas por coma, para poder cambiar CREDENCIALES_LLAVE sin perder lo guardado. */

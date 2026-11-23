@@ -276,14 +276,24 @@ recibe cada correo y lo convierte en una actuación del trámite al que pertenec
 Con `IMAP_HOST`, `IMAP_USER` e `IMAP_PASSWORD` definidos, Radika revisa el buzón cada 5
 minutos y hace esto mismo sola:
 
-- Abre la carpeta en modo solo lectura: no marca correos como leídos, no mueve ni borra nada.
-- Lee solo los encabezados (remitente, asunto, fecha, nombres de adjuntos), no el cuerpo.
-- La primera vez toma como punto de partida el último correo que haya; el historial anterior
-  no se procesa.
+- Vigila todas las carpetas del buzón menos enviados, borradores, papelera y spam (o solo las
+  de `IMAP_CARPETAS`). Cada carpeta lleva su propio punto de lectura.
+- Abre cada carpeta en modo solo lectura: no marca correos como leídos, no mueve ni borra nada.
+- De cada correo lee los encabezados (remitente, asunto, fecha, nombres de adjuntos).
+- Solo cuando el correo viene de un dominio judicial y el asunto no trae radicado, abre el
+  cuerpo y hasta dos PDF pequeños (primero el acta de reparto) para buscarlo. Ese texto se usa
+  en memoria y no se guarda. No lee imágenes escaneadas ni archivos comprimidos.
+- La primera vez que ve una carpeta toma como punto de partida su último correo; el historial
+  anterior no se procesa.
 - Ignora por completo los correos que no vienen de un dominio judicial.
+- Un correo movido a otra carpeta no se cuenta dos veces.
 - Los correos de juzgados que no logra enlazar quedan en `GET /v1/correos/pendientes` con el
-  motivo; casi siempre indican una tutela que falta registrar. Se quitan de la lista con
-  `DELETE /v1/correos/pendientes/:id`.
+  motivo y, si encontró un radicado completo, con `radicadoSugerido` para registrar la tutela.
+  Se quitan de la lista con `DELETE /v1/correos/pendientes/:id`.
+
+Límite conocido: en las tutelas en línea que reparte la oficina civil, laboral y de familia de
+Bogotá, el acta trae el juzgado y la secuencia pero no el radicado. Esas quedan pendientes
+hasta que llega el primer correo del juzgado.
 
 La lógica del lector está probada con un buzón simulado; la conexión IMAP real se comprueba
 al desplegar, con el buzón de verdad.
