@@ -308,6 +308,19 @@ hasta que llega el primer correo del juzgado.
 La lógica del lector está probada con un buzón simulado; la conexión IMAP real se comprueba
 al desplegar, con el buzón de verdad.
 
+## Respaldo, alarmas y auditoría
+
+- **Respaldo:** `scripts/respaldo.sh` saca cada noche (3:20 a. m. de Bogotá) una copia de la base
+  de datos de Radika, comprueba que se puede leer y la guarda en `respaldos/` del almacén
+  privado, donde se conserva 30 días. Si falla, avisa por el tema de alertas. Para restaurar:
+  `pg_restore --no-owner -d <base> radika-AAAA-MM-DD.dump`.
+- **Alarmas** (CloudWatch, prefijo `radika-`): sitio caído (chequeo externo de `/health`), fallo
+  del equipo (se recupera solo), servidor que no responde (se reinicia solo), CPU alta, y poco
+  espacio o CPU alta en la base. Avisan al tema `radika-alertas`.
+- **Auditoría de la cuenta:** el registro `radika-auditoria` (CloudTrail) guarda un año de
+  actividad de la cuenta de AWS en un almacén privado.
+- **Clave temporal de emergencia:** `docker exec radika node dist/cli/nueva-clave.js <correo>`.
+
 ## Documentos y resumen del caso
 
 Cada trámite puede tener documentos (autos, fallos, actas). Llegan de dos formas: los PDF
