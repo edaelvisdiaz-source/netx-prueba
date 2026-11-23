@@ -1,4 +1,4 @@
-import { BadGatewayException, Injectable, ServiceUnavailableException } from '@nestjs/common';
+import { BadGatewayException, ConflictException, Injectable, ServiceUnavailableException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { DocumentosService } from '../documentos/documentos.service';
@@ -10,6 +10,8 @@ import { DocumentoParaResumen, ResumenCaso, ResumidorDeCasos } from './resumen-c
 /** La API recibe hasta 32 MB por peticion y el archivo crece un tercio al codificarlo. */
 const BYTES_MAXIMOS_POR_RESUMEN = 18 * 1024 * 1024;
 const DOCUMENTOS_MAXIMOS_POR_RESUMEN = 8;
+/** Cada resumen ocupa memoria y cuesta dinero: pocos a la vez y nunca dos del mismo caso. */
+const RESUMENES_SIMULTANEOS = 2;
 
 @Injectable()
 export class ResumenCasoService {
@@ -24,9 +26,22 @@ export class ResumenCasoService {
     return this.resumidor.activo;
   }
 
+  private readonly enCurso = new Set<string>();
+
   /** Redacta el resumen con las actuaciones y los documentos mas recientes que quepan, y lo guarda. */
   async generar(tramiteId: string): Promise<ResumenCaso> {
     if (!this.resumidor.activo) throw new ServiceUnavailableException('El resumen con IA no esta configurado');
+    if (this.enCurso.has(tramiteId)) throw new ConflictException('Ya se esta redactando el resumen de este caso; espera a que termine');
+    if (this.enCurso.size >= RESUMENES_SIMULTANEOS) throw new ServiceUnavailableException('Hay otros resumenes en curso; intenta de nuevo en un minuto');
+    this.enCurso.add(tramiteId);
+    try {
+      return await this.redactar(tramiteId);
+    } finally {
+      this.enCurso.delete(tramiteId);
+    }
+  }
+
+  private async redactar(tramiteId: string): Promise<ResumenCaso> {
     const { tramite, actuaciones, situacion } = await this.tramitesService.detalle(tramiteId);
     const fichas = this.documentos.activo ? await this.documentos.listar(tramiteId) : [];
     const leidos: Array<DocumentoParaResumen & { id: string }> = [];
@@ -34,7 +49,7 @@ export class ResumenCasoService {
     for (const ficha of fichas) {
       if (leidos.length >= DOCUMENTOS_MAXIMOS_POR_RESUMEN || bytes + ficha.bytes > BYTES_MAXIMOS_POR_RESUMEN) continue;
       const { contenido } = await this.documentos.abrir(ficha.id);
-      leidos.push({ id: ficha.id, nombre: ficha.nombre, tipo: ficha.tipo, contenido });
+      leidos.push({ id: ficha.id, nombre: ficha.nombre, tipo: ficha.tipo, origen: ficha.origen, contenido });
       bytes += ficha.bytes;
     }
     const redactado = await this.resumidor.resumir({

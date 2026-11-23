@@ -1,5 +1,4 @@
-import { MiddlewareConsumer, Module, NestModule, RequestMethod } from '@nestjs/common';
-import { raw } from 'express';
+import { Module } from '@nestjs/common';
 import { APP_FILTER, APP_GUARD } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
 import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
@@ -36,7 +35,7 @@ import { Documentos1700000000008 } from './migrations/1700000000008-documentos';
 import { AlmacenConfigurado, AlmacenDocumentos } from './documentos/almacen';
 import { Documento } from './documentos/documento.entity';
 import { DocumentosController } from './documentos/documentos.controller';
-import { BYTES_MAXIMOS_DOCUMENTO, DocumentosService } from './documentos/documentos.service';
+import { DocumentosService } from './documentos/documentos.service';
 import { ClaudeResumidorDeCasos } from './resumen/claude.resumen-caso';
 import { ResumidorDeCasos } from './resumen/resumen-caso';
 import { ResumenCasoService } from './resumen/resumen-caso.service';
@@ -101,11 +100,4 @@ class ConfigModule {}
     ResumenCasoService,
   ],
 })
-export class AppModule implements NestModule {
-  /** La subida de documentos recibe el archivo tal cual en el cuerpo, no JSON. */
-  configure(consumidor: MiddlewareConsumer): void {
-    consumidor
-      .apply(raw({ type: ['application/pdf', 'image/png', 'image/jpeg', 'application/octet-stream'], limit: BYTES_MAXIMOS_DOCUMENTO }))
-      .forRoutes({ path: 'v1/tramites/:id/documentos', method: RequestMethod.POST });
-  }
-}
+export class AppModule {}

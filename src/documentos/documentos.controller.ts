@@ -1,12 +1,40 @@
-import { BadRequestException, Controller, Delete, Get, Headers, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Req, Res } from '@nestjs/common';
+import { BadRequestException, Controller, PayloadTooLargeException, Delete, Get, Headers, HttpCode, HttpStatus, Param, ParseUUIDPipe, Post, Req, Res } from '@nestjs/common';
 import { Throttle } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { ok } from '../common/respuesta';
 import { TramitesService } from '../tramites/tramites.service';
-import { DocumentosService } from './documentos.service';
+import { BYTES_MAXIMOS_DOCUMENTO, DocumentosService } from './documentos.service';
 
 const SUBIDAS_POR_MINUTO = 30;
 const VENTANA_MS = 60_000;
+
+const TIPOS_DE_SUBIDA: ReadonlySet<string> = new Set(['application/pdf', 'image/png', 'image/jpeg', 'application/octet-stream']);
+
+/**
+ * Lee el archivo del cuerpo de la peticion con un tope de tamano. Se hace aqui, y no con un
+ * middleware, para que ocurra despues de comprobar la llave o la sesion: nadie sin acceso
+ * puede hacer que el servidor reciba megas.
+ */
+function leerArchivo(peticion: Request): Promise<Buffer> {
+  const tipo = (peticion.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase();
+  if (!TIPOS_DE_SUBIDA.has(tipo)) throw new BadRequestException('Envia el archivo como PDF, PNG o JPG en el cuerpo de la peticion');
+  if (Number(peticion.headers['content-length'] ?? 0) > BYTES_MAXIMOS_DOCUMENTO) throw new PayloadTooLargeException('El archivo supera los 15 MB');
+  return new Promise((resolver, rechazar) => {
+    const trozos: Buffer[] = [];
+    let total = 0;
+    peticion.on('data', (trozo: Buffer) => {
+      total += trozo.length;
+      if (total > BYTES_MAXIMOS_DOCUMENTO) {
+        peticion.destroy();
+        rechazar(new PayloadTooLargeException('El archivo supera los 15 MB'));
+        return;
+      }
+      trozos.push(trozo);
+    });
+    peticion.on('end', () => resolver(Buffer.concat(trozos)));
+    peticion.on('error', () => rechazar(new BadRequestException('No se pudo recibir el archivo')));
+  });
+}
 
 function nombreDelEncabezado(valor: string | undefined): string {
   if (!valor) return 'documento';
@@ -35,8 +63,7 @@ export class DocumentosController {
   @Throttle({ default: { limit: SUBIDAS_POR_MINUTO, ttl: VENTANA_MS } })
   async subir(@Param('id', ParseUUIDPipe) id: string, @Req() peticion: Request, @Headers('x-nombre-archivo') nombre?: string) {
     await this.tramites.obtener(id);
-    if (!Buffer.isBuffer(peticion.body)) throw new BadRequestException('Envia el archivo como PDF, PNG o JPG en el cuerpo de la peticion');
-    return ok(await this.documentos.agregar(id, { nombre: nombreDelEncabezado(nombre), contenido: peticion.body, origen: 'MANUAL' }));
+    return ok(await this.documentos.agregar(id, { nombre: nombreDelEncabezado(nombre), contenido: await leerArchivo(peticion), origen: 'MANUAL' }));
   }
 
   /** Entrega el archivo para verlo en el visor. Solo se puede incrustar dentro de Radika. */

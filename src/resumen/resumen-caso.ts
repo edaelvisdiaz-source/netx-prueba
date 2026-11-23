@@ -24,6 +24,8 @@ export interface DocumentoParaResumen {
   readonly nombre: string;
   readonly tipo: string;
   readonly contenido: Buffer;
+  /** Como llego: por correo (remitente sin verificar) o subido por una persona de la firma. */
+  readonly origen: 'CORREO' | 'MANUAL';
 }
 
 export interface EntradaResumenCaso {

@@ -8,6 +8,7 @@ import { Documento, OrigenDocumento } from './documento.entity';
 export const BYTES_MAXIMOS_DOCUMENTO = 15 * 1024 * 1024;
 const LARGO_MAXIMO_NOMBRE = 200;
 const DOCUMENTOS_POR_TRAMITE = 200;
+const BYTES_MAXIMOS_POR_TRAMITE = 200 * 1024 * 1024;
 
 const FIRMAS: ReadonlyArray<{ readonly tipo: string; readonly inicio: Buffer }> = [
   { tipo: 'application/pdf', inicio: Buffer.from('%PDF-') },
@@ -56,7 +57,13 @@ export class DocumentosService {
     const sha256 = createHash('sha256').update(nuevo.contenido).digest('hex');
     const existente = await this.documentos.findOneBy({ tramiteId, sha256 });
     if (existente) return existente;
-    if ((await this.documentos.countBy({ tramiteId })) >= DOCUMENTOS_POR_TRAMITE) {
+    const ocupado = await this.documentos
+      .createQueryBuilder('d')
+      .select('count(*)::int', 'cantidad')
+      .addSelect('coalesce(sum(d.bytes), 0)::bigint', 'bytes')
+      .where('d.tramite_id = :tramiteId', { tramiteId })
+      .getRawOne<{ cantidad: number; bytes: string }>();
+    if ((ocupado?.cantidad ?? 0) >= DOCUMENTOS_POR_TRAMITE || Number(ocupado?.bytes ?? 0) + nuevo.contenido.length > BYTES_MAXIMOS_POR_TRAMITE) {
       throw new BadRequestException('Este tramite ya tiene el maximo de documentos');
     }
     const clave = `tramites/${tramiteId}/${randomUUID()}`;
@@ -99,15 +106,19 @@ export class DocumentosService {
     return { documento, contenido: await this.almacen.leer(await this.clave(id)) };
   }
 
+  /** Primero el archivo y despues la ficha: si el almacen falla, la ficha sigue ahi y se puede reintentar. */
   async eliminar(id: string): Promise<void> {
     const clave = await this.clave(id);
-    await this.documentos.delete({ id });
-    await this.almacen.eliminar(clave).catch((error: unknown) => {
+    try {
+      await this.almacen.eliminar(clave);
+    } catch (error) {
       this.logger.warn(`No se pudo borrar del almacen el documento ${id}: ${error instanceof Error ? error.message : 'error'}`);
-    });
+      throw new ServiceUnavailableException('No se pudo borrar el archivo del almacen; intenta de nuevo');
+    }
+    await this.documentos.delete({ id });
   }
 
-  /** Antes de borrar un tramite: sus fichas caen en cascada, pero los archivos hay que quitarlos aparte. */
+  /** Antes de borrar un tramite: sus fichas caen en cascada, pero los archivos hay que quitarlos aparte. Si uno falla, no se sigue. */
   async eliminarDeTramite(tramiteId: string): Promise<void> {
     for (const documento of await this.documentos.find({ where: { tramiteId }, select: { id: true } })) {
       await this.eliminar(documento.id);

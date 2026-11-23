@@ -905,6 +905,9 @@ describe('Radika API', () => {
     await subir(Buffer.from('<html><script>alert(1)</script></html>'), 'malo.pdf').expect(400);
     await subir(Buffer.from('MZ ejecutable'), 'virus.exe', 'application/octet-stream').expect(400);
     await conLlave(api().post(`/v1/tramites/${tutela.id}/documentos`)).send({ nombre: 'x' }).expect(400);
+    // Sin llave ni sesion se rechaza antes de recibir el archivo.
+    await api().post(`/v1/tramites/${tutela.id}/documentos`).set('Content-Type', 'application/pdf').send(PDF('x')).expect(401);
+    await subir(Buffer.concat([PDF('enorme'), Buffer.alloc(15 * 1024 * 1024)]), 'enorme.pdf').expect(413);
     await conLlave(api().post('/v1/tramites/11111111-1111-4111-8111-111111111111/documentos')).set('Content-Type', 'application/pdf').send(PDF('x')).expect(404);
     await api().get(`/v1/documentos/${fallo.id}/contenido`).expect(401);
 
@@ -928,6 +931,14 @@ describe('Radika API', () => {
     await conLlave(api().delete(`/v1/documentos/${otro.id}`)).expect(200);
     await conLlave(api().delete(`/v1/documentos/${otro.id}`)).expect(404);
     expect(almacen.archivos.size).toBe(1);
+
+    // Si el almacen no deja borrar el archivo, la ficha y el tramite se conservan para reintentar.
+    const borrar = almacen.eliminar.bind(almacen);
+    almacen.eliminar = async () => { throw new Error('almacen caido'); };
+    await conLlave(api().delete(`/v1/documentos/${fallo.id}`)).expect(503);
+    await conLlave(api().delete(`/v1/tramites/${tutela.id}`)).expect(503);
+    expect(await datos.query('SELECT count(*)::int AS n FROM documentos')).toEqual([{ n: 1 }]);
+    almacen.eliminar = borrar;
 
     await conLlave(api().delete(`/v1/tramites/${tutela.id}`)).expect(200);
     expect(almacen.archivos.size).toBe(0);
@@ -989,6 +1000,12 @@ describe('Radika API', () => {
 
     const detalle = (await conLlave(api().get(`/v1/tramites/${tutela.id}`)).expect(200)).body.data;
     expect(detalle.tramite.resumenIa).toMatchObject({ estadoActual: 'Con fallo', generadoAt: expect.any(String) });
+
+    expect(pedido.documentos.map((documento) => documento.origen)).toEqual(['MANUAL', 'MANUAL', 'MANUAL']);
+
+    // Dos pedidos a la vez del mismo caso: solo uno llega a la IA.
+    const aLaVez = await Promise.all([1, 2].map(() => conLlave(api().post(`/v1/tramites/${tutela.id}/resumen`))));
+    expect(aLaVez.map((respuesta) => respuesta.status).sort()).toEqual([200, 409]);
 
     resumidorDeCasos.falla = true;
     await conLlave(api().post(`/v1/tramites/${tutela.id}/resumen`)).expect(502);
