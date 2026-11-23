@@ -409,6 +409,51 @@ describe('Radika API', () => {
     expect(await monitor.avisarTerminos(limite)).toBe(0);
   });
 
+  test('los avisos de terminos siguen el mismo criterio que el tablero', async () => {
+    const monitor = app.get(MonitorService);
+    const avisados = async () => (await datos.query(`SELECT payload->'datos'->'termino'->>'clave' AS clave FROM eventos WHERE tipo LIKE 'TERMINO%' ORDER BY created_at`)).map((fila: { clave: string }) => fila.clave);
+    fuente.procesos = [proceso('2026-11-03')];
+    const conFallo = (anotacion: string) => [actuacion('1', '2026-11-04', 'Auto admite tutela'), { ...actuacion('2', '2026-11-17', 'Sentencia de primera instancia'), anotacion }];
+
+    // Fallo a favor: el plazo de impugnar es de la entidad, no de la firma. No se avisa.
+    fuente.actuaciones = conFallo('CONCEDE AMPARO');
+    const aFavor = await crearTutela();
+    await monitor.revisar(aFavor.id);
+    expect(await monitor.avisarTerminos('2026-11-19')).toBe(0);
+
+    // Fallo en contra: si corre el plazo para impugnar.
+    fuente.actuaciones = conFallo('NIEGA AMPARO');
+    const enContra = await crearTutela('11001310300120260012400');
+    await monitor.revisar(enContra.id);
+    expect(await monitor.avisarTerminos('2026-11-19')).toBe(1);
+    expect(await avisados()).toEqual(['IMPUGNACION']);
+
+    // Sin fallo y vencida, pero alguien la marco como cumplida: no se avisa.
+    fuente.actuaciones = [actuacion('1', '2026-11-04', 'Auto admite tutela')];
+    const cumplida = await crearTutela('11001310300120260012500');
+    await monitor.revisar(cumplida.id);
+    await conLlave(api().patch(`/v1/tramites/${cumplida.id}`)).send({ etapaManual: 'CUMPLIDA' }).expect(200);
+    expect(await monitor.avisarTerminos('2026-12-10')).toBe(0);
+    await conLlave(api().patch(`/v1/tramites/${cumplida.id}`)).send({ etapaManual: null }).expect(200);
+    expect(await monitor.avisarTerminos('2026-12-10')).toBe(1);
+    expect(await avisados()).toEqual(['IMPUGNACION', 'FALLO_PRIMERA_INSTANCIA']);
+  });
+
+  test('un fallo inesperado al revisar queda a la vista y espacia los reintentos', async () => {
+    const monitor = app.get(MonitorService);
+    const tutela = await crearTutela();
+    const buscar = fuente.buscarProcesos.bind(fuente);
+    fuente.buscarProcesos = async () => { throw new TypeError('dato inesperado'); };
+    expect(await monitor.revisarPendientes()).toBe(1);
+    fuente.buscarProcesos = buscar;
+    const [fila] = await datos.query('SELECT ultimo_error, errores_consecutivos, proxima_revision_at > now() AS aplazado FROM tramites WHERE id = $1', [tutela.id]);
+    expect(fila).toEqual({ ultimo_error: 'Radika tuvo un problema interno al revisar este caso', errores_consecutivos: 1, aplazado: true });
+    // La siguiente revision correcta limpia el error.
+    fuente.procesos = [proceso('2026-11-03')];
+    await monitor.revisar(tutela.id);
+    expect((await conLlave(api().get(`/v1/tramites/${tutela.id}`))).body.data.tramite).toMatchObject({ ultimoError: null, erroresConsecutivos: 0 });
+  });
+
   test('lista con filtros y paginas, actualiza y elimina', async () => {
     const primera = await crearTutela();
     await crearTutela('11001310300120260012400');
@@ -666,6 +711,18 @@ describe('Radika API', () => {
     expect(guardado).not.toContain('Se asignó al Juzgado');
     expect(guardado).not.toContain('ACTA DE REPARTO');
 
+    // Un correo que hace fallar el registro se omite y los siguientes se procesan.
+    const registrar = app.get(MonitorService).registrarCorreo.bind(app.get(MonitorService));
+    app.get(MonitorService).registrarCorreo = async (entrante) => {
+      if (entrante.subject === 'VENENO') throw new Error('correo que rompe');
+      return registrar(entrante);
+    };
+    lector.otras['INBOX.REPARTO'] = [...lector.otras['INBOX.REPARTO'], correo(101, 'VENENO'), correo(102, 'NOTIFICA AUTO TUTELA 110013109017-2026 - 9795')];
+    expect(await buzon.sincronizar()).toEqual({ leidos: 2, vinculados: 1, pendientes: 0 });
+    expect(await buzon.sincronizar()).toEqual({ leidos: 0, vinculados: 0, pendientes: 0 });
+    app.get(MonitorService).registrarCorreo = registrar;
+    await datos.query(`DELETE FROM actuaciones WHERE titulo LIKE 'NOTIFICA AUTO TUTELA%'`);
+
     // El mismo correo movido a otra carpeta no se cuenta dos veces.
     lector.otras['INBOX.Fallos'] = [correo(3, 'Generación de Tutela en línea No 3245999'), correo(2, 'Generación de Tutela en línea No 3245678')];
     lector.contenidos = { ...lector.contenidos, 2: lector.contenidos[2] };
@@ -818,7 +875,7 @@ describe('Radika API', () => {
     await conSesion(api().post('/v1/tramites')).send({ tipo: 'APOSTILLA', radicado: 'AP-77' }).expect(403);
     await app1(conSesion(api().post('/v1/tramites'))).send({ tipo: 'APOSTILLA', radicado: 'AP-77' }).expect(201);
 
-    // Administracion de usuarios: solo administradores (o la llave de API).
+    // Administracion de usuarios: solo administradores con su sesion.
     const asesora = (await app1(conSesion(api().post('/v1/usuarios'))).send({ email: 'laura@empresa.test', nombre: 'Laura Asesora' }).expect(201)).body.data;
     expect(asesora).toMatchObject({ usuario: { rol: 'ASESOR' }, claveTemporal: expect.stringMatching(/^.{14}$/) });
     const ingresoAsesora = await app1(api().post('/v1/sesion')).send({ email: 'laura@empresa.test', clave: asesora.claveTemporal }).expect(200);
@@ -826,7 +883,10 @@ describe('Radika API', () => {
     await app1(api().put('/v1/sesion/clave')).set('Cookie', sesionAsesora).send({ actual: asesora.claveTemporal, nueva: 'Clave-De-Laura-1' }).expect(200);
     await api().get('/v1/usuarios').set('Cookie', sesionAsesora).expect(403);
     expect((await conSesion(api().get('/v1/usuarios')).expect(200)).body.data).toHaveLength(2);
-    expect((await conLlave(api().get('/v1/usuarios')).expect(200)).body.data).toHaveLength(2);
+    // La llave de las integraciones no administra personas: ni las ve, ni las crea, ni les cambia la clave.
+    await conLlave(api().get('/v1/usuarios')).expect(403);
+    await conLlave(api().post('/v1/usuarios')).send({ email: 'intruso@empresa.test', nombre: 'Intruso', rol: 'ADMIN' }).expect(403);
+    await conLlave(api().patch(`/v1/usuarios/${admin.usuario.id}`)).send({ nuevaClave: true }).expect(403);
     expect((await conLlave(api().get('/v1/sesion'))).body.data).toEqual({ usuario: null });
     await conLlave(api().put('/v1/sesion/clave')).send({ actual: 'x', nueva: 'Clave-Nueva-2026' }).expect(400);
 

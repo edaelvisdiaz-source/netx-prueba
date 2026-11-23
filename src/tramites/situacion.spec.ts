@@ -1,4 +1,4 @@
-import { calcularSituacion, etapaAutomatica, leerPartes, sentidoDelFallo, DatosSituacion } from './situacion';
+import { calcularSituacion, etapaAutomatica, leerPartes, sentidoDelFallo, terminosVigentes, DatosSituacion } from './situacion';
 import { CategoriaActuacion } from './tipos';
 
 const act = (fecha: string, categoria: CategoriaActuacion, titulo = 'Actuacion', anotacion: string | null = null, detectadaAt = new Date('2026-11-01T00:00:00Z')) =>
@@ -72,6 +72,26 @@ describe('etapaAutomatica', () => {
   test('desacato y remision a la Corte', () => {
     expect(etapaAutomatica('2026-11-10', [act('2026-11-19', 'FALLO', 'Sentencia', 'CONCEDE'), act('2026-12-01', 'DESACATO')])).toBe('DESACATO');
     expect(etapaAutomatica('2026-11-10', [act('2026-11-19', 'FALLO', 'Sentencia', 'CONCEDE'), act('2026-12-01', 'REMISION_CORTE')])).toBe('EN_CORTE');
+  });
+});
+
+describe('terminosVigentes', () => {
+  const termino = (clave: 'FALLO_PRIMERA_INSTANCIA' | 'IMPUGNACION') =>
+    ({ clave, descripcion: '', fechaBase: '2026-11-10', fechaLimite: '2026-11-25', diasHabilesRestantes: 1, estado: 'POR_VENCER' as const });
+  const ambos = [termino('FALLO_PRIMERA_INSTANCIA'), termino('IMPUGNACION')];
+
+  test('el plazo del fallo solo importa mientras se espera; el de impugnar, solo si el fallo no fue a favor', () => {
+    expect(terminosVigentes('ADMITIDA', ambos).map((t) => t.clave)).toEqual(['FALLO_PRIMERA_INSTANCIA']);
+    expect(terminosVigentes('FALLO_DESFAVORABLE', ambos).map((t) => t.clave)).toEqual(['IMPUGNACION']);
+    expect(terminosVigentes('CARENCIA_OBJETO', ambos).map((t) => t.clave)).toEqual(['IMPUGNACION']);
+    expect(terminosVigentes('FALLO_FAVORABLE', ambos)).toEqual([]);
+  });
+
+  test('un caso cumplido, remitido, en segunda instancia o sin etapa no tiene plazos que avisar', () => {
+    for (const etapa of ['CUMPLIDA', 'REMITIDA_OTRO_DESPACHO', 'FALLO_SEGUNDA_INSTANCIA', 'EN_CORTE', 'IMPUGNADA'] as const) {
+      expect(terminosVigentes(etapa, ambos)).toEqual([]);
+    }
+    expect(terminosVigentes(null, ambos)).toEqual([]);
   });
 });
 

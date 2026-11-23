@@ -152,6 +152,20 @@ export function etapaAutomatica(fechaRadicacion: FechaISO | null, actuaciones: R
 
 const ETAPAS_CON_FALLO_A_IMPUGNAR: ReadonlySet<Etapa> = new Set(['FALLO_DESFAVORABLE', 'CARENCIA_OBJETO', 'FALLO_SIN_CLASIFICAR']);
 const ETAPAS_SIN_PLAZOS: ReadonlySet<Etapa> = new Set(['CUMPLIDA', 'REMITIDA_OTRO_DESPACHO', 'FALLO_SEGUNDA_INSTANCIA', 'EN_CORTE']);
+const ETAPAS_ESPERANDO_FALLO: ReadonlySet<Etapa> = new Set(['SIN_DATOS', 'RADICADA', 'REQUERIMIENTO', 'ADMITIDA']);
+
+/**
+ * Terminos que todavia importan segun la etapa del caso. Es la misma regla para el tablero y para
+ * los avisos: un fallo a favor no abre plazo de impugnacion para la firma, y un caso cumplido,
+ * remitido a otro despacho o ya en segunda instancia no tiene plazos que vigilar.
+ */
+export function terminosVigentes(etapa: Etapa | null, terminos: ReadonlyArray<Termino>): Termino[] {
+  if (etapa === null || ETAPAS_SIN_PLAZOS.has(etapa)) return [];
+  return terminos.filter((termino) =>
+    termino.clave === 'IMPUGNACION' ? ETAPAS_CON_FALLO_A_IMPUGNAR.has(etapa) : ETAPAS_ESPERANDO_FALLO.has(etapa),
+  );
+}
+
 const FECHA_LARGA = new Intl.DateTimeFormat('es-CO', { day: 'numeric', month: 'long', timeZone: 'UTC' });
 
 function enPalabras(fecha: FechaISO): string {
@@ -272,9 +286,8 @@ export function calcularSituacion(datos: DatosSituacion): Situacion {
   const automatica = etapaAutomatica(datos.fechaRadicacion, datos.actuaciones);
   const etapa = datos.etapaManual ?? automatica;
   const atencion = vigente ? ordenar([...alertasDeTutela(datos, etapa, automatica, terminos), ...alertasGenerales(datos)]) : [];
-  const pendientes = terminos
+  const pendientes = terminosVigentes(etapa, terminos)
     .filter((termino) => termino.estado === 'EN_CURSO' || termino.estado === 'POR_VENCER')
-    .filter((termino) => termino.clave !== 'IMPUGNACION' || ETAPAS_CON_FALLO_A_IMPUGNAR.has(etapa))
     .map((termino) => termino.fechaLimite)
     .sort();
   const reciente = ultima && diasHabilesEntre(ultima.fecha, datos.hoy) <= DIAS_NOVEDAD_RECIENTE ? ' (novedad reciente)' : '';
@@ -283,7 +296,7 @@ export function calcularSituacion(datos: DatosSituacion): Situacion {
     nota: `${TEXTO_ETAPA[etapa]}${ultima ? `. Último movimiento: ${ultima.titulo}${reciente}` : ''}`,
     recomendacion: recomendar(etapa, terminos),
     atencion, nivel: atencion[0]?.nivel ?? null,
-    proximoVencimiento: ETAPAS_SIN_PLAZOS.has(etapa) || !vigente ? null : pendientes[0] ?? null,
+    proximoVencimiento: vigente ? pendientes[0] ?? null : null,
     terminos,
   };
 }

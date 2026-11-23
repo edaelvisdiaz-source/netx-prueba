@@ -71,14 +71,19 @@ export class BuzonService {
     let pendientes = 0;
     let ultimoUid = punto.ultimoUid;
     for (const correo of lectura.correos) {
-      if (esRemitenteConfiable(correo.from, this.env.CORREO_DOMINIOS_CONFIABLES)) {
-        const resultado = await this.registrar(carpeta, correo);
-        if (resultado.vinculado) {
-          vinculados += 1;
-          if (!resultado.duplicado) await this.guardarAdjuntos(carpeta, correo, resultado.tramiteId, resultado.actuacionId ?? null);
-        } else if (resultado.motivo !== 'REMITENTE_NO_CONFIABLE') {
-          pendientes += await this.dejarPendiente(direccion, carpeta, correo, resultado.motivo, resultado.radicadoSugerido ?? null);
+      // Un correo que no se puede procesar se anota y se salta: no debe detener a los que vienen detras.
+      try {
+        if (esRemitenteConfiable(correo.from, this.env.CORREO_DOMINIOS_CONFIABLES)) {
+          const resultado = await this.registrar(carpeta, correo);
+          if (resultado.vinculado) {
+            vinculados += 1;
+            if (!resultado.duplicado) await this.guardarAdjuntos(carpeta, correo, resultado.tramiteId, resultado.actuacionId ?? null);
+          } else if (resultado.motivo !== 'REMITENTE_NO_CONFIABLE') {
+            pendientes += await this.dejarPendiente(direccion, carpeta, correo, resultado.motivo, resultado.radicadoSugerido ?? null);
+          }
         }
+      } catch (error) {
+        this.logger.error(`Se omitio el correo ${correo.uid} de ${carpeta}: ${error instanceof Error ? error.message : 'error'}`);
       }
       ultimoUid = correo.uid;
       await this.buzones.update({ direccion, carpeta }, { ultimoUid });

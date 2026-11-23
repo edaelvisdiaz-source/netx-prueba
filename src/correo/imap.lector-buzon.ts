@@ -55,6 +55,12 @@ export function nombresDeAdjuntos(nodo: NodoEstructura | undefined): string[] {
   return hojas(nodo).filter(esAdjunto).map(nombreDe).filter((nombre): nombre is string => Boolean(nombre));
 }
 
+/** Un encabezado de fecha ilegible no debe impedir leer el buzon: se toma la hora actual. */
+export function fechaSegura(valor: Date | string | undefined | null): string {
+  const fecha = new Date(valor ?? Date.now());
+  return (Number.isNaN(fecha.getTime()) ? new Date() : fecha).toISOString();
+}
+
 /** Carpetas donde pueden llegar o archivarse notificaciones: todas menos enviados, borradores, papelera y spam. */
 export function carpetasVigiladas(todas: ReadonlyArray<CarpetaImap>, configuradas: ReadonlyArray<string> | undefined): string[] {
   const legibles = todas.filter((carpeta) => !carpeta.flags?.has('\\Noselect'));
@@ -189,7 +195,7 @@ export class ImapLectorBuzon extends LectorBuzon {
           from: remitente.address,
           fromNombre: remitente.name || null,
           subject: mensaje.envelope.subject ?? '',
-          date: new Date(mensaje.envelope.date ?? Date.now()).toISOString(),
+          date: fechaSegura(mensaje.envelope.date),
           adjuntos: nombresDeAdjuntos(mensaje.bodyStructure as NodoEstructura | undefined),
         });
       }

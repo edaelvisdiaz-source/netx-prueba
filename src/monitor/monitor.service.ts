@@ -16,7 +16,7 @@ import { esRemitenteConfiable, extraerPistas, PistasRadicado, tituloDesdeAsunto 
 import { CorreoEntrante, RegistrarActuacion } from '../tramites/dto';
 import { clasificarActuacion } from '../tramites/clasificacion';
 import { convieneBuscarInstancia, instanciaDe, normalizarRadicadoJudicial, procesoDe, radicadoDeInstancia } from '../tramites/radicado';
-import { calcularSituacion } from '../tramites/situacion';
+import { calcularSituacion, terminosVigentes } from '../tramites/situacion';
 import { Tramite } from '../tramites/tramite.entity';
 import { TramitesService } from '../tramites/tramites.service';
 
@@ -338,9 +338,23 @@ export class MonitorService {
         await this.revisar(id);
       } catch (error) {
         this.logger.error(`Fallo la revision del tramite ${id}: ${error instanceof Error ? error.message : 'error'}`);
+        await this.anotarFalloInesperado(id);
       }
     }
     return reservados.length;
+  }
+
+  /**
+   * Un fallo que no viene de la fuente (base de datos, dato inesperado) tambien cuenta: queda a la
+   * vista en el tramite y los reintentos se espacian, en vez de repetirse cada pocos minutos sin que nadie lo sepa.
+   */
+  private async anotarFalloInesperado(tramiteId: string): Promise<void> {
+    try {
+      const tramite = await this.tramites.findOneBy({ id: tramiteId });
+      if (tramite) await this.registrarError(tramite, new FuenteError('Radika tuvo un problema interno al revisar este caso', 'NO_DISPONIBLE'));
+    } catch (error) {
+      this.logger.error(`No se pudo anotar el fallo del tramite ${tramiteId}: ${error instanceof Error ? error.message : 'error'}`);
+    }
   }
 
   /** Deja un aviso por cada termino de tutela por vencer o vencido. Devuelve cuantos avisos nuevos creo. */
@@ -349,17 +363,12 @@ export class MonitorService {
       where: { tipo: 'TUTELA', estado: 'ACTIVO', sincronizadoAt: Not(IsNull()) },
     });
     if (tutelas.length === 0) return 0;
-    const actuaciones = await this.actuaciones.find({
-      where: { tramiteId: In(tutelas.map((tutela) => tutela.id)), categoria: In(['FALLO', 'IMPUGNACION']) },
-      select: { tramiteId: true, fecha: true, categoria: true },
-    });
+    const actuaciones = await this.actuaciones.find({ where: { tramiteId: In(tutelas.map((tutela) => tutela.id)) } });
     let avisos = 0;
     for (const tutela of tutelas) {
-      const terminos = calcularTerminosTutela({
-        fechaRadicacion: tutela.fechaRadicacion,
-        actuaciones: actuaciones.filter((actuacion) => actuacion.tramiteId === tutela.id),
-        hoy,
-      });
+      // Mismo criterio que el tablero: etapa (tambien la fijada a mano) y terminos que aun importan.
+      const situacion = calcularSituacion({ ...tutela, actuaciones: actuaciones.filter((actuacion) => actuacion.tramiteId === tutela.id), hoy });
+      const terminos = terminosVigentes(situacion.etapa, situacion.terminos);
       for (const termino of terminos) {
         const porVencer = termino.estado === 'POR_VENCER';
         const falloVencido = termino.estado === 'VENCIDO' && termino.clave === 'FALLO_PRIMERA_INSTANCIA';

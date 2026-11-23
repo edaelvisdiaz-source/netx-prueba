@@ -66,6 +66,8 @@ export class ApiKeyGuard implements CanActivate {
     if (typeof llave === 'string') {
       const recibida = huella(llave);
       if (this.huellas.reduce((encontrada, esperada) => timingSafeEqual(recibida, esperada) || encontrada, false)) {
+        // La llave es para integraciones (el CRM). Administrar personas exige la sesion de un administrador.
+        if (marca<boolean>(SOLO_ADMIN)) throw new ForbiddenException('Esto solo lo puede hacer un administrador con su sesion');
         peticion.usuario = null;
         return true;
       }

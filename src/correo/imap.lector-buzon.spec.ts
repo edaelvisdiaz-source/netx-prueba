@@ -1,5 +1,5 @@
 import { cargarEnv } from '../config/env';
-import { carpetasVigiladas, ImapLectorBuzon, nombresDeAdjuntos, partesConRadicado, textoPlano } from './imap.lector-buzon';
+import { carpetasVigiladas, fechaSegura, ImapLectorBuzon, nombresDeAdjuntos, partesConRadicado, textoPlano } from './imap.lector-buzon';
 
 const base = { DATABASE_URL: 'postgres://u:p@localhost:5432/radika', RADIKA_API_KEYS: 'k'.repeat(32) };
 
@@ -65,5 +65,12 @@ describe('lector del buzon por IMAP', () => {
     textoPlano('<'.repeat(200_000));
     textoPlano('<a '.repeat(70_000));
     expect(Date.now() - inicio).toBeLessThan(200);
+  });
+
+  test('una fecha ilegible no rompe la lectura', () => {
+    expect(fechaSegura('2026-11-11T21:54:06Z')).toBe('2026-11-11T21:54:06.000Z');
+    expect(Date.parse(fechaSegura('no es una fecha'))).toBeGreaterThan(Date.parse('2026-01-01'));
+    expect(Date.parse(fechaSegura(new Date(Number.NaN)))).not.toBeNaN();
+    expect(Date.parse(fechaSegura(undefined))).not.toBeNaN();
   });
 });
