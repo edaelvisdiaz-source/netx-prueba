@@ -21,7 +21,7 @@ const TERMINOS = { EN_CURSO: ['En curso', 'info'], POR_VENCER: ['Por vencer', 'a
 const ETAPAS = {
   SIN_DATOS: ['Sin datos', ''], RADICADA: ['Radicada', 'info'], REQUERIMIENTO: ['Requerimiento', 'mal'], ADMITIDA: ['Admitida', 'info'],
   FALLO_FAVORABLE: ['Fallo a favor', 'ok'], FALLO_DESFAVORABLE: ['Fallo en contra', 'mal'], CARENCIA_OBJETO: ['Carencia de objeto', 'aviso-c'],
-  FALLO_SIN_CLASIFICAR: ['Fallo por revisar', 'aviso-c'], IMPUGNADA: ['Impugnada', 'aviso-c'], DESACATO: ['Desacato', 'mal'], EN_CORTE: ['En la Corte', ''],
+  FALLO_SIN_CLASIFICAR: ['Fallo por revisar', 'aviso-c'], FALLO_SEGUNDA_INSTANCIA: ['Fallo 2.ª instancia', 'aviso-c'], REMITIDA_OTRO_DESPACHO: ['Remitida a otro despacho', 'aviso-c'], IMPUGNADA: ['Impugnada', 'aviso-c'], DESACATO: ['Desacato', 'mal'], EN_CORTE: ['En la Corte', ''],
   CUMPLIDA: ['Cumplida', 'ok'],
 };
 const NIVELES = { URGENTE: ['Urgente', 'mal'], PRONTO: ['Pronto', 'aviso-c'], INFO: ['Para revisar', 'info'] };

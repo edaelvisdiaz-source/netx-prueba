@@ -6,7 +6,7 @@ import { CategoriaActuacion, EstadoTramite, FuenteId, TipoTramite } from './tipo
 /** Etapas de una tutela. Las calcula Radika con las actuaciones; una persona puede fijar otra a mano. */
 export const ETAPAS = [
   'SIN_DATOS', 'RADICADA', 'REQUERIMIENTO', 'ADMITIDA', 'FALLO_FAVORABLE', 'FALLO_DESFAVORABLE', 'CARENCIA_OBJETO',
-  'FALLO_SIN_CLASIFICAR', 'IMPUGNADA', 'DESACATO', 'EN_CORTE', 'CUMPLIDA',
+  'FALLO_SIN_CLASIFICAR', 'FALLO_SEGUNDA_INSTANCIA', 'IMPUGNADA', 'DESACATO', 'EN_CORTE', 'REMITIDA_OTRO_DESPACHO', 'CUMPLIDA',
 ] as const;
 export type Etapa = (typeof ETAPAS)[number];
 
@@ -98,11 +98,15 @@ export function leerPartes(sujetos: string | null): { tutelante: string | null; 
 
 const FALLO_CARENCIA = /CARENCIA|HECHO SUPERADO/;
 const FALLO_EN_CONTRA = /NIEGA|NEGAR|IMPROCEDEN|RECHAZA|NO (SE )?(CONCEDE|TUTELA|AMPARA)/;
+const FALLO_DEL_SUPERIOR = /REVOCA|CONFIRMA|MODIFICA/;
+const CAMBIO_DE_DESPACHO = /POR COMPETENCIA|FALTA DE COMPETENCIA/;
+const ENTIDAD_REPORTA_CUMPLIMIENTO = /CUMPLIMIENTO/;
 const FALLO_A_FAVOR = /CONCEDE|AMPARA|TUTELA(R)? (EL|LOS|LA|LAS) |PROTEGE/;
 
 /** Sentido aproximado del fallo segun la anotacion del juzgado. Si no es claro, queda sin clasificar. */
 export function sentidoDelFallo(titulo: string, anotacion: string | null): Etapa {
   const texto = sinTildes(`${titulo} ${anotacion ?? ''}`);
+  if (FALLO_DEL_SUPERIOR.test(texto)) return 'FALLO_SEGUNDA_INSTANCIA';
   if (FALLO_CARENCIA.test(texto)) return 'CARENCIA_OBJETO';
   if (FALLO_EN_CONTRA.test(texto)) return 'FALLO_DESFAVORABLE';
   if (FALLO_A_FAVOR.test(texto)) return 'FALLO_FAVORABLE';
@@ -121,7 +125,13 @@ function siguienteEtapa(actual: Etapa, actuacion: ActuacionParaSituacion): Etapa
     case 'IMPUGNACION': return 'IMPUGNADA';
     case 'DESACATO': return 'DESACATO';
     case 'REMISION_CORTE': return 'EN_CORTE';
-    default: return actual;
+    default: {
+      const texto = sinTildes(`${actuacion.titulo} ${actuacion.anotacion ?? ''}`);
+      if (actual === 'RADICADA' && CAMBIO_DE_DESPACHO.test(texto)) return 'REMITIDA_OTRO_DESPACHO';
+      // Si la entidad reporta que cumplio, el fallo cuyo sentido no se pudo leer le ordeno algo.
+      if (actual === 'FALLO_SIN_CLASIFICAR' && ENTIDAD_REPORTA_CUMPLIMIENTO.test(texto)) return 'FALLO_FAVORABLE';
+      return actual;
+    }
   }
 }
 
@@ -131,6 +141,7 @@ export function etapaAutomatica(fechaRadicacion: FechaISO | null, actuaciones: R
 }
 
 const ETAPAS_CON_FALLO_A_IMPUGNAR: ReadonlySet<Etapa> = new Set(['FALLO_DESFAVORABLE', 'CARENCIA_OBJETO', 'FALLO_SIN_CLASIFICAR']);
+const ETAPAS_SIN_PLAZOS: ReadonlySet<Etapa> = new Set(['CUMPLIDA', 'REMITIDA_OTRO_DESPACHO', 'FALLO_SEGUNDA_INSTANCIA', 'EN_CORTE']);
 const FECHA_LARGA = new Intl.DateTimeFormat('es-CO', { day: 'numeric', month: 'long', timeZone: 'UTC' });
 
 function enPalabras(fecha: FechaISO): string {
@@ -153,6 +164,8 @@ function recomendar(etapa: Etapa, terminos: ReadonlyArray<Termino>): string | nu
     case 'FALLO_DESFAVORABLE': return `Fallo en contra. Evalúa con el abogado si se impugna.${hasta}`;
     case 'CARENCIA_OBJETO': return `El juez consideró que ya no había nada que ordenar (suele ser porque la entidad respondió durante el trámite). Confirma que la respuesta resuelve de verdad lo pedido; si no, se puede impugnar.${hasta}`;
     case 'FALLO_SIN_CLASIFICAR': return `Hay fallo, pero la anotacion no deja claro el sentido. Lee la sentencia y marca la etapa a mano.${hasta}`;
+    case 'FALLO_SEGUNDA_INSTANCIA': return 'El juez de segunda instancia ya decidió la impugnación. Lee si confirmó o revocó el primer fallo: esa decisión es definitiva, salvo que la Corte Constitucional la escoja para revisión.';
+    case 'REMITIDA_OTRO_DESPACHO': return 'El juzgado envió la tutela a otro despacho por competencia. Allí recibe un radicado nuevo: búscalo en el correo de reparto y regístralo para seguirla; este trámite se puede cerrar.';
     case 'IMPUGNADA': return 'El fallo fue impugnado. El juez de segunda instancia tiene 20 días hábiles para decidir desde que recibe el expediente.';
     case 'DESACATO': return 'Hay un incidente de desacato en curso. Revisa los requerimientos del juzgado y aporta la prueba del incumplimiento.';
     case 'EN_CORTE': return 'El expediente fue enviado a la Corte Constitucional para eventual revisión. Es el paso normal después del fallo y casi nunca requiere una acción.';
@@ -164,6 +177,7 @@ const TEXTO_ETAPA: Readonly<Record<Etapa, string>> = {
   SIN_DATOS: 'Sin datos de la fuente todavía', RADICADA: 'Radicada, pendiente de admisión', REQUERIMIENTO: 'El juzgado hizo un requerimiento',
   ADMITIDA: 'Admitida, en espera del fallo', FALLO_FAVORABLE: 'Fallo a favor', FALLO_DESFAVORABLE: 'Fallo en contra',
   CARENCIA_OBJETO: 'Fallo: carencia de objeto', FALLO_SIN_CLASIFICAR: 'Hay fallo (sentido por confirmar)', IMPUGNADA: 'Impugnada, en segunda instancia',
+  FALLO_SEGUNDA_INSTANCIA: 'Fallo de segunda instancia', REMITIDA_OTRO_DESPACHO: 'Remitida a otro despacho por competencia',
   DESACATO: 'Incidente de desacato', EN_CORTE: 'Enviada a la Corte Constitucional', CUMPLIDA: 'Fallo cumplido',
 };
 
@@ -185,9 +199,13 @@ function alertasDeTutela(datos: DatosSituacion, etapa: Etapa, automatica: Etapa,
     alertas.push({ nivel: 'URGENTE', motivo: `El plazo para impugnar vence el ${enPalabras(impugnacion.fechaLimite)}`, fechaLimite: impugnacion.fechaLimite });
   }
   if (etapa === 'FALLO_SIN_CLASIFICAR') alertas.push({ nivel: 'PRONTO', motivo: 'Hay fallo y falta confirmar si fue a favor o en contra', fechaLimite: null });
-  if ((etapa === 'RADICADA' || etapa === 'ADMITIDA') && fallo?.estado === 'VENCIDO') {
+  if (etapa === 'ADMITIDA' && fallo?.estado === 'VENCIDO') {
     alertas.push({ nivel: 'URGENTE', motivo: `El juez no ha fallado y el plazo venció el ${enPalabras(fallo.fechaLimite)}`, fechaLimite: fallo.fechaLimite });
   }
+  if (etapa === 'RADICADA' && fallo?.estado === 'VENCIDO') {
+    alertas.push({ nivel: 'PRONTO', motivo: `La consulta no muestra admisión ni fallo y el plazo venció el ${enPalabras(fallo.fechaLimite)}: confirma con el juzgado, puede no estar actualizada`, fechaLimite: fallo.fechaLimite });
+  }
+  if (etapa === 'REMITIDA_OTRO_DESPACHO') alertas.push({ nivel: 'PRONTO', motivo: 'Fue enviada a otro despacho: registra el radicado nuevo', fechaLimite: null });
   if ((etapa === 'RADICADA' || etapa === 'ADMITIDA') && fallo?.estado === 'POR_VENCER') {
     alertas.push({ nivel: 'PRONTO', motivo: `El fallo debe salir a más tardar el ${enPalabras(fallo.fechaLimite)}`, fechaLimite: fallo.fechaLimite });
   }
@@ -197,6 +215,9 @@ function alertasDeTutela(datos: DatosSituacion, etapa: Etapa, automatica: Etapa,
   const ultimoFallo = orden.filter((actuacion) => actuacion.categoria === 'FALLO').pop();
   if (etapa === 'FALLO_FAVORABLE' && ultimoFallo && diasHabilesEntre(ultimoFallo.fecha, datos.hoy) <= DIAS_VERIFICAR_CUMPLIMIENTO) {
     alertas.push({ nivel: 'PRONTO', motivo: 'Fallo a favor: verificar que la entidad cumpla', fechaLimite: null });
+  }
+  if (etapa === 'FALLO_SEGUNDA_INSTANCIA' && ultimoFallo && diasHabilesEntre(ultimoFallo.fecha, datos.hoy) <= DIAS_VERIFICAR_CUMPLIMIENTO) {
+    alertas.push({ nivel: 'PRONTO', motivo: 'Hay decisión de segunda instancia: revisa si confirmó o revocó', fechaLimite: null });
   }
   if (etapa === 'DESACATO') alertas.push({ nivel: 'PRONTO', motivo: 'Incidente de desacato en curso', fechaLimite: null });
   return alertas;
@@ -252,7 +273,7 @@ export function calcularSituacion(datos: DatosSituacion): Situacion {
     nota: `${TEXTO_ETAPA[etapa]}${ultima ? `. Último movimiento: ${ultima.titulo}${reciente}` : ''}`,
     recomendacion: recomendar(etapa, terminos),
     atencion, nivel: atencion[0]?.nivel ?? null,
-    proximoVencimiento: etapa === 'CUMPLIDA' || !vigente ? null : pendientes[0] ?? null,
+    proximoVencimiento: ETAPAS_SIN_PLAZOS.has(etapa) || !vigente ? null : pendientes[0] ?? null,
     terminos,
   };
 }

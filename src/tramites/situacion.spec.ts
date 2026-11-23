@@ -86,6 +86,17 @@ describe('calcularSituacion', () => {
     expect(s.recomendacion).toContain('cumpl');
   });
 
+  test('casos reales: segunda instancia, cambio de despacho y cumplimiento reportado', () => {
+    expect(etapaAutomatica('2026-10-14', [act('2026-10-21', 'FALLO', 'Revoca Tutela')])).toBe('FALLO_SEGUNDA_INSTANCIA');
+    expect(etapaAutomatica('2026-10-23', [act('2026-10-23', 'OTRA', 'Que ordena remitir', 'REMITE POR COMPETENCIA - ORDENA NOTIFICAR')])).toBe('REMITIDA_OTRO_DESPACHO');
+    expect(etapaAutomatica('2026-10-13', [act('2026-10-27', 'FALLO', 'Sentencia tutela primera Instancia'), act('2026-11-03', 'OTRA', 'Recepción memorial', 'CUMPLIMIENTO MINISTERIO EDUCACION')])).toBe('FALLO_FAVORABLE');
+    const remitida = calcularSituacion({ ...base, hoy: '2026-12-01', actuaciones: [act('2026-11-10', 'OTRA', 'Que ordena remitir', 'REMITE POR COMPETENCIA')] });
+    expect(remitida).toMatchObject({ nivel: 'PRONTO', proximoVencimiento: null });
+    const sinMovimiento = calcularSituacion({ ...base, hoy: '2026-12-01' });
+    expect(sinMovimiento.atencion[0]).toMatchObject({ nivel: 'PRONTO' });
+    expect(sinMovimiento.atencion[0].motivo).toContain('puede no estar actualizada');
+  });
+
   test('el juez no ha fallado y el plazo vencio', () => {
     const s = calcularSituacion({ ...base, hoy: '2026-12-01', actuaciones: [act('2026-11-10', 'ADMISION')] });
     expect(s.etapa).toBe('ADMITIDA');

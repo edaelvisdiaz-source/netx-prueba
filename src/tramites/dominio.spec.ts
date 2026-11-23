@@ -21,6 +21,21 @@ describe('radicado', () => {
   });
 });
 
+describe('clasificacion con titulos reales de los despachos', () => {
+  test.each([
+    ['Al despacho para fallo', null, 'OTRA'],
+    ['Al despacho para  Sentencia', null, 'OTRA'],
+    ['Sustanciacion', 'Sentencia Concede', 'FALLO'],
+    ['Remitido Corte Constitucional', 'Remitido corte constitucional', 'REMISION_CORTE'],
+    ['Envio Corte Constitucional', null, 'REMISION_CORTE'],
+    ['Revoca Tutela', null, 'FALLO'],
+    ['Envío de Notificación', 'Se notifica:Sentencia tutela de fecha 19/11/2026', 'OTRA'],
+    ['Tramites de Secretaria', 'NOTIFICACION FALLO.-', 'OTRA'],
+  ])('%s / %s -> %s', (titulo, anotacion, esperado) => {
+    expect(clasificarActuacion(titulo, anotacion)).toBe(esperado);
+  });
+});
+
 describe('tipos', () => {
   test('solo los judiciales usan la Rama Judicial', () => {
     expect(esTipoJudicial('TUTELA')).toBe(true);
