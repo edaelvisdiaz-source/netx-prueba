@@ -292,6 +292,10 @@ minutos y hace esto mismo sola:
 - La primera vez que ve una carpeta toma como punto de partida su último correo; el historial
   anterior no se procesa.
 - Ignora por completo los correos que no vienen de un dominio judicial.
+- No se fía del campo «De:»: un correo de dominio judicial solo cuenta si el servidor de correo
+  propio (`CORREO_SERVIDORES_DE_CONFIANZA`, por defecto `hostinger.io`) anotó en
+  `Authentication-Results` que pasó DMARC o que lo firma ese mismo dominio (DKIM). Si no, queda
+  en pendientes con motivo `SIN_VERIFICAR` y no crea actuaciones ni guarda adjuntos.
 - Un correo movido a otra carpeta no se cuenta dos veces.
 - Los correos de juzgados que no logra enlazar quedan en `GET /v1/correos/pendientes` con el
   motivo y, si encontró un radicado completo, con `radicadoSugerido` para registrar la tutela.

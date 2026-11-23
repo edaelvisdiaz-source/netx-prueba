@@ -4,7 +4,7 @@ import { Repository } from 'typeorm';
 import { ENV, Env } from '../config/env';
 import { DocumentosService } from '../documentos/documentos.service';
 import { MonitorService, ResultadoCorreo } from '../monitor/monitor.service';
-import { esRemitenteConfiable } from './analizar-correo';
+import { autenticidadDelRemitente, esRemitenteConfiable } from './analizar-correo';
 import { Buzon, CorreoPendiente } from './buzon.entity';
 import { CorreoLeido, LectorBuzon, LecturaCarpeta, PuntoDeLectura } from './lector-buzon';
 
@@ -74,6 +74,16 @@ export class BuzonService {
       // Un correo que no se puede procesar se anota y se salta: no debe detener a los que vienen detras.
       try {
         if (esRemitenteConfiable(correo.from, this.env.CORREO_DOMINIOS_CONFIABLES)) {
+          // El "De:" se puede falsificar. Si nuestro servidor no comprobo el remitente, el correo no
+          // crea actuaciones ni guarda adjuntos: queda a la vista para que una persona lo revise.
+          const autenticidad = autenticidadDelRemitente(correo.autenticacion, correo.from, this.env.CORREO_SERVIDORES_DE_CONFIANZA, this.env.CORREO_DOMINIOS_CONFIABLES);
+          if (autenticidad !== 'VERIFICADO') {
+            this.logger.warn(`Correo ${correo.uid} de ${carpeta} con remitente judicial sin comprobar (${autenticidad})`);
+            pendientes += await this.dejarPendiente(direccion, carpeta, correo, 'SIN_VERIFICAR', null);
+            ultimoUid = correo.uid;
+            await this.buzones.update({ direccion, carpeta }, { ultimoUid });
+            continue;
+          }
           const resultado = await this.registrar(carpeta, correo);
           if (resultado.vinculado) {
             vinculados += 1;

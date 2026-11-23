@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ImapFlow } from 'imapflow';
 import { ENV, Env } from '../config/env';
 import { AdjuntoDescargado, CorreoLeido, LectorBuzon, LecturaCarpeta, PuntoDeLectura } from './lector-buzon';
+import { valoresDeEncabezado } from './analizar-correo';
 import { textoDePdf } from './texto-pdf';
 
 export interface NodoEstructura {
@@ -186,7 +187,7 @@ export class ImapLectorBuzon extends LectorBuzon {
     const correos: CorreoLeido[] = [];
     if (punto && punto.uidValidity === uidValidity && uidMaximo > punto.ultimoUid) {
       const rango = `${punto.ultimoUid + 1}:${Math.min(uidMaximo, punto.ultimoUid + maximo)}`;
-      for await (const mensaje of cliente.fetch(rango, { uid: true, envelope: true, bodyStructure: true }, { uid: true })) {
+      for await (const mensaje of cliente.fetch(rango, { uid: true, envelope: true, bodyStructure: true, headers: ['authentication-results'] }, { uid: true })) {
         const remitente = mensaje.envelope?.from?.[0];
         if (!remitente?.address || !mensaje.envelope?.messageId) continue;
         correos.push({
@@ -197,6 +198,7 @@ export class ImapLectorBuzon extends LectorBuzon {
           subject: mensaje.envelope.subject ?? '',
           date: fechaSegura(mensaje.envelope.date),
           adjuntos: nombresDeAdjuntos(mensaje.bodyStructure as NodoEstructura | undefined),
+          autenticacion: valoresDeEncabezado(mensaje.headers?.toString('utf8') ?? '', 'Authentication-Results'),
         });
       }
     }

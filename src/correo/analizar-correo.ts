@@ -55,3 +55,59 @@ export function esRemitenteConfiable(direccion: string, dominios: ReadonlyArray<
   const dominio = direccion.toLowerCase().split('@').at(-1) ?? '';
   return dominios.some((confiable) => dominio === confiable || dominio.endsWith(`.${confiable}`));
 }
+
+export type Autenticidad = 'VERIFICADO' | 'RECHAZADO' | 'SIN_DATOS';
+
+function dominioDe(direccion: string): string {
+  return direccion.toLowerCase().split('@').at(-1)?.replace(/[>"'\s]/g, '') ?? '';
+}
+
+/** Dos dominios se corresponden si son el mismo o uno es subdominio del otro. */
+function alineados(a: string, b: string): boolean {
+  return a === b || a.endsWith(`.${b}`) || b.endsWith(`.${a}`);
+}
+
+/**
+ * Dice si el servidor de correo que recibio el mensaje comprobo que de verdad viene del dominio
+ * que aparece como remitente. El campo "De:" lo puede escribir cualquiera; lo que cuenta es el
+ * veredicto (DMARC o firma DKIM del mismo dominio) que anota nuestro propio servidor.
+ *
+ * Solo se lee el primer encabezado Authentication-Results puesto por un servidor de confianza:
+ * el receptor lo agrega arriba de todo, asi que uno falso incluido por el remitente queda debajo.
+ */
+export function autenticidadDelRemitente(
+  encabezados: ReadonlyArray<string>,
+  remitente: string,
+  servidoresDeConfianza: ReadonlyArray<string>,
+  dominiosConfiables: ReadonlyArray<string>,
+): Autenticidad {
+  const propio = encabezados.find((valor) => {
+    const servidor = valor.split(';')[0].trim().toLowerCase().split(/\s/)[0];
+    return servidoresDeConfianza.some((confiable) => servidor === confiable || servidor.endsWith(`.${confiable}`));
+  });
+  if (propio === undefined) return 'SIN_DATOS';
+  const dominio = dominioDe(remitente);
+  const delMismoDominio = (valor: string | undefined) =>
+    valor !== undefined && alineados(dominioDe(valor), dominio) && esRemitenteConfiable(dominioDe(valor), dominiosConfiables);
+  const aprobado = propio
+    .split(';')
+    .slice(1)
+    .some((clausula) => {
+      const sinComentarios = clausula.replace(/\([^)]*\)/g, ' ');
+      const metodo = /^\s*(dmarc|dkim)\s*=\s*pass\b/i.exec(sinComentarios)?.[1].toLowerCase();
+      if (!metodo) return false;
+      const propiedad = metodo === 'dmarc' ? 'header.from' : 'header.d';
+      return delMismoDominio(new RegExp(`${propiedad.replace('.', '\\.')}\\s*=\\s*([^\\s;]+)`, 'i').exec(sinComentarios)?.[1]);
+    });
+  return aprobado ? 'VERIFICADO' : 'RECHAZADO';
+}
+
+/** Valores de un encabezado dentro de un bloque de encabezados en bruto, con las lineas plegadas ya unidas. */
+export function valoresDeEncabezado(bloque: string, nombre: string): string[] {
+  const desplegado = bloque.replace(/\r?\n[ \t]+/g, ' ');
+  const prefijo = `${nombre.toLowerCase()}:`;
+  return desplegado
+    .split(/\r?\n/)
+    .filter((linea) => linea.toLowerCase().startsWith(prefijo))
+    .map((linea) => linea.slice(prefijo.length).trim());
+}

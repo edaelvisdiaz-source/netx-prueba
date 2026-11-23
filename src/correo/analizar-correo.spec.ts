@@ -1,4 +1,4 @@
-import { esRemitenteConfiable, extraerPistas, tituloDesdeAsunto } from './analizar-correo';
+import { autenticidadDelRemitente, esRemitenteConfiable, extraerPistas, tituloDesdeAsunto, valoresDeEncabezado } from './analizar-correo';
 
 /** Asuntos reales recibidos de juzgados (nombres de personas cambiados). */
 describe('correos de juzgados', () => {
@@ -61,5 +61,48 @@ describe('correos de juzgados', () => {
     expect(esRemitenteConfiable('juez@ramajudicial.gov.co.estafa.com', dominios)).toBe(false);
     expect(esRemitenteConfiable('juez@falsoramajudicial.gov.co', dominios)).toBe(false);
     expect(esRemitenteConfiable('sin-arroba', dominios)).toBe(false);
+  });
+
+  describe('autenticidad del remitente', () => {
+    const servidores = ['hostinger.io'];
+    const dominios = ['ramajudicial.gov.co', 'notificacionesrj.gov.co'];
+    const juzgado = 'j17pccbt@cendoj.ramajudicial.gov.co';
+    const veredicto = (encabezados: string[], remitente = juzgado) => autenticidadDelRemitente(encabezados, remitente, servidores, dominios);
+    // Formas reales del servidor de correo (partes locales cambiadas).
+    const real = 'fr-int-smtpin22.hostinger.io; dkim=pass header.d=cendoj.ramajudicial.gov.co header.s=selector1 header.b="tMAop/Mi"; dmarc=pass (policy=quarantine) header.from=cendoj.ramajudicial.gov.co; spf=pass (fr-int-smtpin22.hostinger.io: domain of xxx@cendoj.ramajudicial.gov.co designates 1.2.3.4 as permitted sender) smtp.mailfrom=xxx@cendoj.ramajudicial.gov.co; arc=pass ("microsoft.com:s=arcselector10001:i=1")';
+
+    test('acepta el correo que el servidor propio comprobo, en cualquier orden de clausulas', () => {
+      expect(veredicto([real])).toBe('VERIFICADO');
+      expect(veredicto(['de-fra-smtpin7.hostinger.io; arc=pass; spf=pass smtp.mailfrom=x@cendoj.ramajudicial.gov.co; dmarc=pass header.from=ramajudicial.gov.co'])).toBe('VERIFICADO');
+      expect(veredicto(['fr-int-smtpin37.hostinger.io; dkim=pass header.d=notificacionesrj.gov.co header.s=sel; dmarc=fail header.from=notificacionesrj.gov.co'], 'samai@notificacionesrj.gov.co')).toBe('VERIFICADO');
+    });
+
+    test('rechaza el remitente falsificado', () => {
+      // Dice venir del juzgado, pero la firma y el dominio comprobado son de otro.
+      expect(veredicto(['fr-int-smtpin1.hostinger.io; dkim=pass header.d=estafa.com; dmarc=fail (policy=quarantine) header.from=cendoj.ramajudicial.gov.co; spf=pass smtp.mailfrom=x@estafa.com'])).toBe('RECHAZADO');
+      expect(veredicto(['fr-int-smtpin1.hostinger.io; dkim=none; dmarc=none; spf=softfail smtp.mailfrom=x@cendoj.ramajudicial.gov.co'])).toBe('RECHAZADO');
+      // "pass" escondido en un comentario o en otra clave no cuenta.
+      expect(veredicto(['fr-int-smtpin1.hostinger.io; dmarc=fail (dmarc=pass header.from=cendoj.ramajudicial.gov.co) header.from=cendoj.ramajudicial.gov.co'])).toBe('RECHAZADO');
+      expect(veredicto(['fr-int-smtpin1.hostinger.io; x-dmarc=pass header.from=cendoj.ramajudicial.gov.co'])).toBe('RECHAZADO');
+      // Un dominio confiable distinto del que firma no alcanza.
+      expect(veredicto(['fr-int-smtpin1.hostinger.io; dkim=pass header.d=notificacionesrj.gov.co'])).toBe('RECHAZADO');
+    });
+
+    test('solo vale el veredicto del servidor propio, y el primero', () => {
+      expect(veredicto([])).toBe('SIN_DATOS');
+      expect(veredicto(['mx.estafa.com; dmarc=pass header.from=cendoj.ramajudicial.gov.co'])).toBe('SIN_DATOS');
+      expect(veredicto(['hostinger.io.estafa.com; dmarc=pass header.from=cendoj.ramajudicial.gov.co'])).toBe('SIN_DATOS');
+      // El remitente incluyo uno falso con el nombre del servidor propio: queda debajo del real.
+      const falso = 'fr-int-smtpin9.hostinger.io; dmarc=pass header.from=cendoj.ramajudicial.gov.co';
+      expect(veredicto(['fr-int-smtpin1.hostinger.io; dmarc=fail header.from=cendoj.ramajudicial.gov.co', falso])).toBe('RECHAZADO');
+    });
+
+    test('lee encabezados plegados en varias lineas', () => {
+      const bloque = 'Return-Path: <x@y.co>\r\nAuthentication-Results: fr-int-smtpin22.hostinger.io;\r\n\tdkim=pass header.d=cendoj.ramajudicial.gov.co;\r\n dmarc=pass header.from=cendoj.ramajudicial.gov.co\r\nARC-Authentication-Results: i=1; otro\r\nauthentication-results: segundo; x=y\r\n';
+      const valores = valoresDeEncabezado(bloque, 'Authentication-Results');
+      expect(valores).toHaveLength(2);
+      expect(veredicto(valores)).toBe('VERIFICADO');
+      expect(valoresDeEncabezado('', 'Authentication-Results')).toEqual([]);
+    });
   });
 });

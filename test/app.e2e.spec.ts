@@ -72,17 +72,26 @@ class PortalFalso extends FuentePortal {
   }
 }
 
+/** En las pruebas el veredicto de autenticacion es opcional: el lector falso pone uno valido si falta. */
+type CorreoDePrueba = Omit<CorreoLeido, 'autenticacion'> & { autenticacion?: ReadonlyArray<string> };
+
 class LectorFalso extends LectorBuzon {
   buzon: string | null = 'asesor@empresa.test';
   uidValidity = '1';
-  correos: CorreoLeido[] = [];
+  correos: CorreoDePrueba[] = [];
   /** Correos de otras carpetas, por nombre de carpeta. */
-  otras: Record<string, CorreoLeido[]> = {};
+  otras: Record<string, CorreoDePrueba[]> = {};
   contenidos: Record<number, string> = {};
   abiertos: number[] = [];
 
   async leer(puntos: ReadonlyMap<string, PuntoDeLectura>, maximo: number): Promise<LecturaCarpeta[]> {
-    return Object.entries({ INBOX: this.correos, ...this.otras }).map(([carpeta, correos]) => {
+    // Como hace el servidor real: cada mensaje llega con el veredicto de autenticacion de su dominio.
+    const comprobado = (correo: CorreoDePrueba): CorreoLeido => {
+      const dominio = correo.from.split('@')[1];
+      return { ...correo, autenticacion: correo.autenticacion ?? [`fr-int-smtpin1.hostinger.io; dkim=pass header.d=${dominio}; dmarc=pass header.from=${dominio}`] };
+    };
+    return Object.entries({ INBOX: this.correos, ...this.otras }).map(([carpeta, sinMarcar]) => {
+      const correos = sinMarcar.map(comprobado);
       const punto = puntos.get(carpeta);
       const vigente = punto?.uidValidity === this.uidValidity ? punto : undefined;
       return {
@@ -628,7 +637,7 @@ describe('Radika API', () => {
 
   test('vigila el buzon: parte del presente, enlaza lo que puede y deja pendiente lo demas', async () => {
     const buzon = app.get(BuzonService);
-    const correo = (uid: number, from: string, subject: string): CorreoLeido => ({
+    const correo = (uid: number, from: string, subject: string): CorreoDePrueba => ({
       uid, from, subject, messageId: `<${uid}@correo.test>`, fromNombre: uid % 2 ? 'Juzgado 17 Penal' : null,
       date: '2026-11-11T21:54:06Z', adjuntos: uid === 12 ? ['Fallo.pdf'] : [],
     });
@@ -667,7 +676,7 @@ describe('Radika API', () => {
   test('vigila varias carpetas y abre el correo solo cuando el asunto no trae el radicado', async () => {
     const buzon = app.get(BuzonService);
     const reparto = 'reparto@cendoj.ramajudicial.gov.co';
-    const correo = (uid: number, subject: string, from = reparto): CorreoLeido => ({
+    const correo = (uid: number, subject: string, from = reparto): CorreoDePrueba => ({
       uid, from, subject, messageId: `<c${uid}@correo.test>`, fromNombre: 'Oficina de Reparto', date: '2026-11-11T21:54:06Z', adjuntos: [],
     });
     const tutela = await crearTutela('11001310901720260979500');
@@ -711,13 +720,28 @@ describe('Radika API', () => {
     expect(guardado).not.toContain('Se asignó al Juzgado');
     expect(guardado).not.toContain('ACTA DE REPARTO');
 
+    // Un correo que dice venir del juzgado pero que el servidor no comprobo no toca el tramite: queda para revisar.
+    const falsificado = { ...correo(103, 'NOTIFICA FALLO TUTELA 110013109017-2026 - 9795'), autenticacion: ['fr-int-smtpin1.hostinger.io; dkim=pass header.d=estafa.com; dmarc=fail header.from=cendoj.ramajudicial.gov.co'] };
+    const sinVeredicto = { ...correo(104, 'NOTIFICA AUTO TUTELA 110013109017-2026 - 9795'), autenticacion: [] };
+    lector.otras['INBOX.REPARTO'] = [...lector.otras['INBOX.REPARTO'], falsificado, sinVeredicto];
+    lector.adjuntos = { 103: [{ nombre: 'Fallo.pdf', contenido: PDF('falso') }] };
+    const antes = await datos.query('SELECT count(*)::int AS n FROM actuaciones');
+    expect(await buzon.sincronizar()).toEqual({ leidos: 2, vinculados: 0, pendientes: 2 });
+    expect(await datos.query('SELECT count(*)::int AS n FROM actuaciones')).toEqual(antes);
+    expect(await datos.query('SELECT count(*)::int AS n FROM documentos')).toEqual([{ n: 0 }]);
+    expect(await datos.query(`SELECT asunto FROM correos_pendientes WHERE motivo = 'SIN_VERIFICAR' ORDER BY asunto`)).toEqual([
+      { asunto: 'NOTIFICA AUTO TUTELA 110013109017-2026 - 9795' }, { asunto: 'NOTIFICA FALLO TUTELA 110013109017-2026 - 9795' },
+    ]);
+    await datos.query(`DELETE FROM correos_pendientes WHERE motivo = 'SIN_VERIFICAR'`);
+    lector.adjuntos = {};
+
     // Un correo que hace fallar el registro se omite y los siguientes se procesan.
     const registrar = app.get(MonitorService).registrarCorreo.bind(app.get(MonitorService));
     app.get(MonitorService).registrarCorreo = async (entrante) => {
       if (entrante.subject === 'VENENO') throw new Error('correo que rompe');
       return registrar(entrante);
     };
-    lector.otras['INBOX.REPARTO'] = [...lector.otras['INBOX.REPARTO'], correo(101, 'VENENO'), correo(102, 'NOTIFICA AUTO TUTELA 110013109017-2026 - 9795')];
+    lector.otras['INBOX.REPARTO'] = [...lector.otras['INBOX.REPARTO'], correo(105, 'VENENO'), correo(106, 'NOTIFICA AUTO TUTELA 110013109017-2026 - 9795')];
     expect(await buzon.sincronizar()).toEqual({ leidos: 2, vinculados: 1, pendientes: 0 });
     expect(await buzon.sincronizar()).toEqual({ leidos: 0, vinculados: 0, pendientes: 0 });
     app.get(MonitorService).registrarCorreo = registrar;
@@ -1034,7 +1058,7 @@ describe('Radika API', () => {
   test('los PDF de un correo del juzgado quedan en el tramite, ligados a su actuacion', async () => {
     const buzon = app.get(BuzonService);
     const juzgado = 'j17pccbt@cendoj.ramajudicial.gov.co';
-    const correo = (uid: number, subject: string, adjuntos: string[]): CorreoLeido => ({
+    const correo = (uid: number, subject: string, adjuntos: string[]): CorreoDePrueba => ({
       uid, from: juzgado, subject, messageId: `<d${uid}@correo.test>`, fromNombre: 'Juzgado 17', date: '2026-11-11T21:54:06Z', adjuntos,
     });
     const tutela = await crearTutela('11001310901720260979500');

@@ -6,6 +6,8 @@ export interface CorreoLeido {
   readonly subject: string;
   readonly date: string;
   readonly adjuntos: ReadonlyArray<string>;
+  /** Valores de los encabezados Authentication-Results del mensaje, de arriba hacia abajo. */
+  readonly autenticacion: ReadonlyArray<string>;
 }
 
 /** Hasta donde se leyo una carpeta la ultima vez. */

@@ -35,7 +35,7 @@ const TIPOS_ARCHIVO = 'application/pdf,image/png,image/jpeg';
 const NIVELES = { URGENTE: ['Urgente', 'mal'], PRONTO: ['Pronto', 'aviso-c'], INFO: ['Para revisar', 'info'] };
 const TRAMITES_POR_PAGINA = 50;
 const ESPERA_BUSQUEDA_MS = 350;
-const MOTIVOS = { SIN_RADICADO: 'No trae radicado', SIN_TRAMITE: 'El trámite no está registrado', AMBIGUO: 'Coincide con varios trámites' };
+const MOTIVOS = { SIN_RADICADO: 'No trae radicado', SIN_TRAMITE: 'El trámite no está registrado', AMBIGUO: 'Coincide con varios trámites', SIN_VERIFICAR: 'Dice venir de un juzgado, pero no se pudo comprobar. Revísalo antes de confiar en él' };
 
 /** Crea un elemento. Los hijos de tipo texto se insertan como texto. */
 function h(etiqueta, atributos, ...hijos) {

@@ -35,6 +35,14 @@ const esquema = z
       .string()
       .default('ramajudicial.gov.co,notificacionesrj.gov.co,consejodeestado.gov.co,corteconstitucional.gov.co')
       .transform((valor) => valor.split(',').map((dominio) => dominio.trim().toLowerCase()).filter(Boolean)),
+    /**
+     * Servidores de correo propios cuyo veredicto de autenticacion (Authentication-Results) se acepta.
+     * Con el lector del buzon, un correo solo se toma como del juzgado si ese servidor lo comprobo.
+     */
+    CORREO_SERVIDORES_DE_CONFIANZA: z
+      .string()
+      .default('hostinger.io')
+      .transform((valor) => valor.split(',').map((servidor) => servidor.trim().toLowerCase()).filter(Boolean)),
     /** Buzon donde llegan las notificaciones. Sin estos tres datos el lector queda apagado. */
     IMAP_HOST: z.string().min(3).optional().or(z.literal('').transform(() => undefined)),
     IMAP_PORT: z.coerce.number().int().min(1).max(65535).default(993),
