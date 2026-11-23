@@ -3,7 +3,7 @@ import { Logger } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
 import type { NextFunction, Request, Response } from 'express';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { AppModule } from './app.module';
 import { ENV, Env } from './config/env';
 
@@ -22,6 +22,8 @@ async function arrancar(): Promise<void> {
     siguiente();
   });
   app.useStaticAssets(join(__dirname, '..', 'public'), { index: 'index.html', maxAge: '5m' });
+  // Lector de PDF para el visor propio (pantallas tactiles). Se sirve desde este mismo sitio: la politica de contenido no admite otros.
+  app.useStaticAssets(dirname(require.resolve('pdfjs-dist/package.json')), { prefix: '/vendor/pdfjs/', index: false, maxAge: '7d' });
   await app.listen(env.PORT);
   new Logger('Radika').log(`API escuchando en el puerto ${env.PORT}`);
 }

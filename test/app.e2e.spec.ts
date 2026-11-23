@@ -922,22 +922,36 @@ describe('Radika API', () => {
     expect(visto.headers['x-content-type-options']).toBe('nosniff');
     expect(visto.headers['content-disposition']).toContain("inline; filename*=UTF-8''Fallo%20de%20tutela%20%C3%B1.pdf");
 
+    const bajado = await conLlave(api().get(`/v1/documentos/${fallo.id}/contenido?descargar=1`)).expect(200);
+    expect(bajado.headers['content-disposition']).toContain('attachment; filename*=');
+
+    // Un documento se puede colgar de una actuacion del mismo tramite, no de otro.
+    const actuacionPropia = (await conLlave(api().post(`/v1/tramites/${tutela.id}/actuaciones`)).send({ fecha: '2026-11-20', titulo: 'Fallo' }).expect(201)).body.data;
+    const ajeno = await crearTutela('11001310300120260099900');
+    const actuacionAjena = (await conLlave(api().post(`/v1/tramites/${ajeno.id}/actuaciones`)).send({ fecha: '2026-11-20', titulo: 'Auto' }).expect(201)).body.data;
+    const colgar = (actuacionId: string) =>
+      conLlave(api().post(`/v1/tramites/${tutela.id}/documentos?actuacionId=${actuacionId}`)).set('Content-Type', 'application/pdf').set('X-Nombre-Archivo', 'sentencia.pdf').send(PDF('sentencia'));
+    expect((await colgar(actuacionPropia.id).expect(201)).body.data.actuacionId).toBe(actuacionPropia.id);
+    await colgar(actuacionAjena.id).expect(400);
+    await colgar('no-es-uuid').expect(400);
+    await conLlave(api().delete(`/v1/tramites/${ajeno.id}`)).expect(200);
+
     const detalle = (await conLlave(api().get(`/v1/tramites/${tutela.id}`)).expect(200)).body.data;
-    expect(detalle.documentos).toHaveLength(1);
+    expect(detalle.documentos).toHaveLength(2);
     expect(detalle.funciones).toEqual({ documentos: true, resumenIa: true });
 
     const otro = (await subir(Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.from('imagen')]), 'captura.png', 'image/png').expect(201)).body.data;
     expect(otro.tipo).toBe('image/png');
     await conLlave(api().delete(`/v1/documentos/${otro.id}`)).expect(200);
     await conLlave(api().delete(`/v1/documentos/${otro.id}`)).expect(404);
-    expect(almacen.archivos.size).toBe(1);
+    expect(almacen.archivos.size).toBe(2);
 
     // Si el almacen no deja borrar el archivo, la ficha y el tramite se conservan para reintentar.
     const borrar = almacen.eliminar.bind(almacen);
     almacen.eliminar = async () => { throw new Error('almacen caido'); };
     await conLlave(api().delete(`/v1/documentos/${fallo.id}`)).expect(503);
     await conLlave(api().delete(`/v1/tramites/${tutela.id}`)).expect(503);
-    expect(await datos.query('SELECT count(*)::int AS n FROM documentos')).toEqual([{ n: 1 }]);
+    expect(await datos.query('SELECT count(*)::int AS n FROM documentos')).toEqual([{ n: 2 }]);
     almacen.eliminar = borrar;
 
     await conLlave(api().delete(`/v1/tramites/${tutela.id}`)).expect(200);

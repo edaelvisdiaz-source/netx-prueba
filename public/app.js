@@ -105,23 +105,80 @@ async function subirArchivo(ruta, archivo) {
 
 const tamano = (bytes) => (bytes >= 1048576 ? `${(bytes / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`);
 
-/** Visor: muestra el documento sobre la pantalla sin salir del caso. En pantallas pequeñas se abre en otra pestaña. */
+const rutaDocumento = (documento, descargar) => `/v1/documentos/${documento.id}/contenido${descargar ? '?descargar=1' : ''}`;
+const PDFJS = '/vendor/pdfjs';
+/** En pantallas tactiles el navegador no muestra bien un PDF incrustado: ahi Radika dibuja las paginas. */
+const usaVisorPropio = () => window.matchMedia('(max-width: 900px), (pointer: coarse)').matches;
+const ESCALA_MAXIMA = 2;
+
+/** Dibuja las paginas del PDF una debajo de otra, solo las que se van viendo, y avisa cual esta en pantalla. */
+async function pintarPdf(ruta, lienzo, alCambiarPagina) {
+  const pdfjs = await import(`${PDFJS}/legacy/build/pdf.min.mjs`);
+  pdfjs.GlobalWorkerOptions.workerSrc = `${PDFJS}/legacy/build/pdf.worker.min.mjs`;
+  const tarea = pdfjs.getDocument({
+    url: ruta, isEvalSupported: false, useWasm: false, wasmUrl: `${PDFJS}/wasm/`,
+    cMapUrl: `${PDFJS}/cmaps/`, cMapPacked: true, standardFontDataUrl: `${PDFJS}/standard_fonts/`,
+  });
+  const pdf = await tarea.promise;
+  const ancho = Math.max(200, lienzo.clientWidth - 16);
+  const escalaPantalla = Math.min(window.devicePixelRatio || 1, ESCALA_MAXIMA);
+  const pintadas = new Set();
+  const pintar = async (numero, hoja) => {
+    if (pintadas.has(numero)) return;
+    pintadas.add(numero);
+    const pagina = await pdf.getPage(numero);
+    const base = pagina.getViewport({ scale: 1 });
+    const vista = pagina.getViewport({ scale: (ancho / base.width) * escalaPantalla });
+    const dibujo = h('canvas', { width: Math.floor(vista.width), height: Math.floor(vista.height), 'aria-label': `Página ${numero}` });
+    await pagina.render({ canvasContext: dibujo.getContext('2d'), viewport: vista }).promise;
+    hoja.replaceChildren(dibujo);
+  };
+  const visibles = new Map();
+  const observador = new IntersectionObserver((entradas) => {
+    for (const entrada of entradas) {
+      const numero = Number(entrada.target.dataset.pagina);
+      visibles.set(numero, entrada.intersectionRatio);
+      if (entrada.isIntersecting) pintar(numero, entrada.target).catch(() => entrada.target.replaceChildren(aviso('No se pudo mostrar esta página', 'mal')));
+    }
+    const [actual] = [...visibles].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0] || [1];
+    alCambiarPagina(actual, pdf.numPages);
+  }, { root: lienzo, rootMargin: '300px 0px', threshold: [0, 0.25, 0.5, 0.75, 1] });
+  const primera = (await pdf.getPage(1)).getViewport({ scale: 1 });
+  const hojas = Array.from({ length: pdf.numPages }, (_, indice) =>
+    h('div', { class: 'hoja', 'data-pagina': indice + 1, style: `height:${Math.round((ancho / primera.width) * primera.height)}px` }));
+  lienzo.replaceChildren(...hojas);
+  hojas.forEach((hoja) => observador.observe(hoja));
+  alCambiarPagina(1, pdf.numPages);
+  return () => { observador.disconnect(); tarea.destroy(); };
+}
+
+/** Visor: muestra el documento sobre la pantalla sin salir del caso. */
 function abrirVisor(documento) {
-  const ruta = `/v1/documentos/${documento.id}/contenido`;
-  if (window.matchMedia('(max-width: 640px)').matches) return window.open(ruta, '_blank', 'noopener');
+  const ruta = rutaDocumento(documento);
   const anterior = document.activeElement;
   const cerrar = h('button', { type: 'button', class: 'secundario' }, 'Cerrar');
-  const lienzo = documento.tipo === 'application/pdf'
-    ? h('iframe', { src: ruta, title: documento.nombre })
-    : h('div', { class: 'visor-imagen' }, h('img', { src: ruta, alt: documento.nombre }));
+  const contador = h('span', { class: 'chip', 'aria-live': 'polite' });
+  const esPdf = documento.tipo === 'application/pdf';
+  const propio = esPdf && usaVisorPropio();
+  const lienzo = !esPdf ? h('div', { class: 'visor-imagen' }, h('img', { src: ruta, alt: documento.nombre }))
+    : propio ? h('div', { class: 'visor-paginas', tabindex: 0 }, h('p', { class: 'cargando' }, 'Abriendo el documento…'))
+    : h('iframe', { src: ruta, title: documento.nombre });
   const visor = h('div', { class: 'visor', role: 'dialog', 'aria-modal': 'true', 'aria-label': `Documento ${documento.nombre}` },
-    h('div', { class: 'visor-barra' }, h('strong', {}, documento.nombre), h('span', { class: 'fila' }, h('a', { href: ruta, target: '_blank', rel: 'noopener' }, 'Abrir en otra pestaña'), cerrar)), lienzo);
-  const salir = () => { visor.remove(); document.removeEventListener('keydown', conTecla); if (anterior && anterior.focus) anterior.focus(); };
+    h('div', { class: 'visor-barra' }, h('strong', {}, documento.nombre),
+      h('span', { class: 'fila' }, propio ? contador : null, h('a', { href: rutaDocumento(documento, true) }, 'Descargar'), cerrar)), lienzo);
+  let soltar = () => {};
+  const salir = () => { soltar(); visor.remove(); document.removeEventListener('keydown', conTecla); document.body.classList.remove('sin-desplazar'); if (anterior && anterior.focus) anterior.focus(); };
   const conTecla = (evento) => evento.key === 'Escape' && salir();
   cerrar.addEventListener('click', salir);
   document.addEventListener('keydown', conTecla);
+  document.body.classList.add('sin-desplazar');
   document.body.append(visor);
   cerrar.focus();
+  if (propio) {
+    pintarPdf(ruta, lienzo, (pagina, total) => { contador.textContent = `${pagina} de ${total}`; })
+      .then((liberar) => { soltar = liberar; })
+      .catch(() => poner(lienzo, aviso('No se pudo mostrar el documento aquí.', 'mal'), h('p', {}, h('a', { href: ruta, target: '_blank', rel: 'noopener' }, 'Abrirlo en otra pestaña'))));
+  }
 }
 
 const fecha = (texto) => (texto ? new Date(texto.length === 10 ? `${texto}T12:00:00` : texto).toLocaleDateString('es-CO', { day: 'numeric', month: 'short', year: 'numeric' }) : '—');
@@ -343,6 +400,26 @@ async function pantallaDetalle(id) {
         : h('p', { class: 'tenue' }, d.funciones.resumenIa ? 'La IA lee las actuaciones y los documentos del caso y te dice en qué va, qué plazos corren y qué hay que hacer.' : 'El resumen con IA aún no está activado en este servidor.'),
       mensajeResumen, d.funciones.resumenIa ? h('div', { class: 'acciones' }, botonResumen) : null);
 
+    const deActuacion = (actuacionId) => d.documentos.filter((documento) => documento.actuacionId === actuacionId);
+    const fichaDocumento = (documento) => {
+      const ver = h('button', { type: 'button', class: 'enlace-oscuro' }, 'Ver');
+      ver.addEventListener('click', () => abrirVisor(documento));
+      return h('div', { class: 'adjunto' }, h('span', { class: 'chip' }, documento.tipo === 'application/pdf' ? 'pdf' : 'imagen'),
+        h('span', { class: 'nombre-adjunto' }, documento.nombre), h('span', { class: 'fila' }, ver, h('a', { href: rutaDocumento(documento, true) }, 'Descargar')));
+    };
+    /** Boton para colgar un archivo de una actuacion concreta. */
+    const adjuntarA = (actuacion) => {
+      if (!d.funciones.documentos) return null;
+      const elegir = h('input', { type: 'file', accept: TIPOS_ARCHIVO, multiple: true, class: 'oculto', 'aria-label': `Adjuntar documento a ${actuacion.titulo}` });
+      const boton = h('button', { type: 'button', class: 'enlace-oscuro' }, 'Adjuntar documento');
+      const mensajeAdjunto = h('div');
+      boton.addEventListener('click', () => elegir.click());
+      elegir.addEventListener('change', () => elegir.files.length && conBoton(boton, mensajeAdjunto, async () => {
+        for (const elegido of elegir.files) await subirArchivo(`/v1/tramites/${id}/documentos?actuacionId=${actuacion.id}`, elegido);
+        await cargar();
+      }));
+      return h('div', { class: 'tenue' }, elegir, boton, mensajeAdjunto);
+    };
     const archivo = h('input', { type: 'file', accept: TIPOS_ARCHIVO, multiple: true });
     const botonSubir = h('button', { type: 'submit', class: 'secundario' }, 'Subir');
     const mensajeDocumentos = h('div');
@@ -351,7 +428,9 @@ async function pantallaDetalle(id) {
       quitar.addEventListener('click', () => confirm(`¿Quitar «${documento.nombre}» de este trámite?`) && conBoton(quitar, mensajeDocumentos, async () => { await api('DELETE', `/v1/documentos/${documento.id}`); await cargar(); }));
       const ver = h('button', { type: 'button', class: 'enlace-oscuro nombre-documento' }, documento.nombre);
       ver.addEventListener('click', () => abrirVisor(documento));
-      return h('tr', {}, h('td', {}, ver, h('div', { class: 'tenue' }, [ORIGENES[documento.origen], fecha(documento.createdAt), tamano(documento.bytes)].join(' · '))), h('td', { class: 'derecha' }, quitar));
+      const actuacion = d.actuaciones.find((a) => a.id === documento.actuacionId);
+      return h('tr', {}, h('td', {}, ver, h('div', { class: 'tenue' }, [ORIGENES[documento.origen], fecha(documento.createdAt), tamano(documento.bytes), actuacion ? `en «${actuacion.titulo}»` : null].filter(Boolean).join(' · '))),
+        h('td', { class: 'derecha' }, h('span', { class: 'fila' }, h('a', { href: rutaDocumento(documento, true) }, 'Descargar'), quitar)));
     };
     const tarjetaDocumentos = h('div', { class: 'tarjeta' }, h('h2', {}, `Documentos (${d.documentos.length})`),
       !d.funciones.documentos ? h('p', { class: 'tenue' }, 'El almacén de documentos aún no está activado en este servidor.')
@@ -424,7 +503,8 @@ async function pantallaDetalle(id) {
           : d.actuaciones.map((a) => h('div', { class: 'linea' }, h('div', { class: 'fecha' }, fecha(a.fecha), a.despacho ? ` · ${a.despacho}` : ''),
             h('div', { class: 'titulo' }, a.titulo, ' ', chip(...(CATEGORIAS[a.categoria] || CATEGORIAS.OTRA))),
             a.anotacion ? h('div', { class: 'tenue' }, a.anotacion) : null,
-            a.resumen ? h('div', { class: 'resumen' }, h('div', {}, a.resumen.resumen), h('div', { class: 'tenue' }, `Qué hacer: ${a.resumen.accionSugerida}`)) : null))),
+            a.resumen ? h('div', { class: 'resumen' }, h('div', {}, a.resumen.resumen), h('div', { class: 'tenue' }, `Qué hacer: ${a.resumen.accionSugerida}`)) : null,
+            deActuacion(a.id).map(fichaDocumento), adjuntarA(a)))),
       h('div', { class: 'tarjeta' }, h('h2', {}, 'Registrar una actuación a mano'), h('form', {
         onsubmit: (evento) => {
           evento.preventDefault();

@@ -207,6 +207,10 @@ export class TramitesService {
     );
   }
 
+  async exigirActuacion(tramiteId: string, actuacionId: string): Promise<void> {
+    if (!(await this.actuaciones.existsBy({ id: actuacionId, tramiteId }))) throw new BadRequestException('Esa actuacion no pertenece a este tramite');
+  }
+
   async eliminar(id: string): Promise<void> {
     const resultado = await this.tramites.delete({ id });
     if (!resultado.affected) throw new NotFoundException('Tramite no encontrado');
