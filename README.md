@@ -126,8 +126,9 @@ siempre el mismo sobre:
 | `GET /health` | Confirma que el servicio está arriba |
 | `POST /v1/tramites` | Registra un trámite |
 | `GET /v1/tramites` | Lista con filtros `referenciaCrm`, `tipo`, `estado`, `page`, `limit` |
-| `GET /v1/tramites/:id` | Detalle con actuaciones y términos calculados |
-| `PATCH /v1/tramites/:id` | Cambia `estado` (`ACTIVO`, `PAUSADO`, `CERRADO`), `referenciaCrm` o `clienteNombre` |
+| `GET /v1/tramites/:id` | Detalle con actuaciones, términos calculados y `situacion` (etapa, tutelante, nota del último estado, recomendación y alertas) |
+| `PATCH /v1/tramites/:id` | Cambia `estado` (`ACTIVO`, `PAUSADO`, `CERRADO`), `referenciaCrm`, `clienteNombre`, `nota` o `etapaManual` (`null` devuelve la etapa al cálculo automático) |
+| `GET /v1/panel` | Tablero: totales, tutelas por etapa, lo que requiere atención y próximos vencimientos |
 | `DELETE /v1/tramites/:id` | Elimina el trámite y su historial |
 | `POST /v1/tramites/:id/revisar` | Revisa ahora mismo, sin esperar el turno |
 | `PUT /v1/tramites/:id/credencial` | Guarda o reemplaza el usuario y la clave del portal (`usuario`, `clave`) |

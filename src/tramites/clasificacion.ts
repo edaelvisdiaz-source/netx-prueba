@@ -10,7 +10,7 @@ const REGLAS: ReadonlyArray<readonly [RegExp, CategoriaActuacion]> = [
   [/ADMITE|ADMISORIO|AVOCA/, 'ADMISION'],
 ];
 
-function sinTildes(texto: string): string {
+export function sinTildes(texto: string): string {
   return texto.normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
 }
 

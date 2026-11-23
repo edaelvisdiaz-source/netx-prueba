@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { soloFecha } from '../terminos/dias-habiles';
+import { ETAPAS } from './situacion';
 import { ESTADOS_TRAMITE, FUENTES, TIPOS_TRAMITE } from './tipos';
 
 const LIMITE_MAXIMO = 100;
@@ -23,6 +24,8 @@ export const listarTramitesSchema = z
     referenciaCrm: referenciaCrm.optional(),
     tipo: z.enum(TIPOS_TRAMITE).optional(),
     estado: z.enum(ESTADOS_TRAMITE).optional(),
+    /** Busca en el radicado, el nombre del cliente y las partes. */
+    q: z.string().trim().min(2).max(80).optional(),
     page: z.coerce.number().int().min(1).max(PAGINA_MAXIMA).default(1),
     limit: z.coerce.number().int().min(1).max(LIMITE_MAXIMO).default(20),
   })
@@ -34,6 +37,9 @@ export const actualizarTramiteSchema = z
     estado: z.enum(ESTADOS_TRAMITE).optional(),
     referenciaCrm: referenciaCrm.nullable().optional(),
     clienteNombre: clienteNombre.nullable().optional(),
+    /** null devuelve la etapa al calculo automatico. */
+    etapaManual: z.enum(ETAPAS).nullable().optional(),
+    nota: z.string().trim().min(1).max(1000).nullable().optional(),
   })
   .strict()
   .refine((cambios) => Object.keys(cambios).length > 0, { message: 'envia al menos un campo' });

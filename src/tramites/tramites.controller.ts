@@ -57,6 +57,12 @@ export class TramitesController {
     return ok(items, { total, page: filtros.page, limit: filtros.limit });
   }
 
+  /** Tablero: cuantos tramites hay, en que etapa van y cuales necesitan atencion. */
+  @Get('v1/panel')
+  async panel() {
+    return ok(await this.tramites.panel());
+  }
+
   @Get('v1/tramites/:id')
   async detalle(@Param('id', ParseUUIDPipe) id: string) {
     return ok({ ...(await this.tramites.detalle(id)), credencialConfigurada: await this.boveda.existe(id) });

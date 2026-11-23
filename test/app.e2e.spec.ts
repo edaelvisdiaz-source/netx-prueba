@@ -16,7 +16,7 @@ import { MonitorService } from '../src/monitor/monitor.service';
 import { Planificador } from '../src/monitor/planificador';
 import { EventosService, firmar } from '../src/notificaciones/eventos.service';
 import { EntradaResumen, ResumenActuacion, Resumidor } from '../src/resumen/resumidor';
-import { sumarDiasHabiles } from '../src/terminos/dias-habiles';
+import { hoyEnColombia, sumarDiasHabiles } from '../src/terminos/dias-habiles';
 import { UsuariosService } from '../src/usuarios/usuarios.service';
 
 const LLAVE = 'llave-de-prueba-'.padEnd(40, 'x');
@@ -712,6 +712,47 @@ describe('Radika API', () => {
     await app1(api().delete('/v1/sesion')).set('Cookie', otraSesion).expect(200);
     await api().get('/v1/sesion').set('Cookie', otraSesion).expect(401);
     await api().get('/v1/sesion').set('Cookie', 'otra=1; radika_sesion=inventada').expect(401);
+  });
+
+  test('muestra el tutelante, la etapa automatica o manual, la recomendacion y el panel de atencion', async () => {
+    const hace = (dias: number) => new Date(Date.parse(`${hoyEnColombia()}T12:00:00Z`) - dias * 86_400_000).toISOString().slice(0, 10);
+    fuente.procesos = [{ ...proceso(hace(10)), sujetos: 'Demandante: ANA MARIA PEREZ | Demandado: MINISTERIO DE EDUCACION NACIONAL' }];
+    fuente.actuaciones = [
+      actuacion('a1', hace(10), 'Auto admite tutela'),
+      { ...actuacion('a2', hace(1), 'Sentencia tutela primera instancia'), anotacion: 'NIEGA AMPARO' },
+    ];
+    const tramite = await crearTutela();
+    await app.get(MonitorService).revisar(tramite.id);
+
+    const lista = await conLlave(api().get('/v1/tramites?q=ana maria')).expect(200);
+    expect(lista.body.data).toHaveLength(1);
+    expect(lista.body.data[0].situacion).toMatchObject({
+      tutelante: 'Ana Maria Perez', accionado: 'Ministerio de Educacion Nacional', etapa: 'FALLO_DESFAVORABLE', esManual: false, nivel: 'URGENTE',
+    });
+    expect(lista.body.data[0].situacion.recomendacion).toContain('impugna');
+    expect((await conLlave(api().get('/v1/tramites?q=100%25')).expect(200)).body.data).toHaveLength(0);
+    await conLlave(api().get('/v1/tramites?q=x')).expect(400);
+
+    const panel = (await conLlave(api().get('/v1/panel')).expect(200)).body.data;
+    expect(panel.totales).toMatchObject({ activos: 1, urgentes: 1, alDia: 0 });
+    expect(panel.porEtapa).toEqual([{ etapa: 'FALLO_DESFAVORABLE', cantidad: 1 }]);
+    expect(panel.atencion[0]).toMatchObject({ tramiteId: tramite.id, nivel: 'URGENTE', tutelante: 'Ana Maria Perez' });
+    expect(panel.vencimientos[0].tramiteId).toBe(tramite.id);
+
+    await conLlave(api().patch(`/v1/tramites/${tramite.id}`)).send({ etapaManual: 'NO_EXISTE' }).expect(400);
+    await conLlave(api().patch(`/v1/tramites/${tramite.id}`)).send({ etapaManual: 'CUMPLIDA', nota: 'El Ministerio ya expidio la resolucion' }).expect(200);
+    const manual = (await conLlave(api().get(`/v1/tramites/${tramite.id}`)).expect(200)).body.data;
+    expect(manual.situacion).toMatchObject({ etapa: 'CUMPLIDA', etapaAutomatica: 'FALLO_DESFAVORABLE', esManual: true, nivel: null });
+    expect(manual.tramite.nota).toBe('El Ministerio ya expidio la resolucion');
+    expect((await conLlave(api().get('/v1/panel')).expect(200)).body.data.totales).toMatchObject({ urgentes: 0, alDia: 1 });
+
+    await conLlave(api().patch(`/v1/tramites/${tramite.id}`)).send({ etapaManual: null }).expect(200);
+    const automatica = (await conLlave(api().get(`/v1/tramites/${tramite.id}`)).expect(200)).body.data;
+    expect(automatica.situacion).toMatchObject({ etapa: 'FALLO_DESFAVORABLE', esManual: false });
+    expect(automatica.tramite.etapaManualAt).toBeNull();
+
+    await conLlave(api().patch(`/v1/tramites/${tramite.id}`)).send({ estado: 'CERRADO' }).expect(200);
+    expect((await conLlave(api().get('/v1/panel')).expect(200)).body.data.totales.activos).toBe(0);
   });
 
   test('un cuerpo mal formado responde 400 y no 500', async () => {

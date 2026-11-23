@@ -57,7 +57,7 @@ export function calcularTerminosTutela(datos: DatosTutela): ReadonlyArray<Termin
     const restantes = diasHabilesEntre(datos.hoy, limite);
     terminos.push({
       clave: 'FALLO_PRIMERA_INSTANCIA',
-      descripcion: 'Plazo del juez para fallar en primera instancia (10 dias habiles)',
+      descripcion: 'Plazo del juez para fallar en primera instancia (10 días hábiles)',
       fechaBase: datos.fechaRadicacion,
       fechaLimite: limite,
       diasHabilesRestantes: restantes,
@@ -73,7 +73,7 @@ export function calcularTerminosTutela(datos: DatosTutela): ReadonlyArray<Termin
     );
     terminos.push({
       clave: 'IMPUGNACION',
-      descripcion: 'Plazo para impugnar el fallo (3 dias habiles desde la notificacion)',
+      descripcion: 'Plazo para impugnar el fallo (3 días hábiles desde la notificación)',
       fechaBase: fallo.fecha,
       fechaLimite: limite,
       diasHabilesRestantes: restantes,

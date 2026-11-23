@@ -1,4 +1,5 @@
 import { Column, CreateDateColumn, Entity, Index, PrimaryGeneratedColumn, UpdateDateColumn } from 'typeorm';
+import type { Etapa } from './situacion';
 import { EstadoTramite, FuenteId, TipoTramite } from './tipos';
 
 @Entity('tramites')
@@ -12,6 +13,11 @@ export class Tramite {
   @Column({ name: 'referencia_crm', type: 'text', nullable: true }) referenciaCrm!: string | null;
   @Column({ name: 'cliente_nombre', type: 'text', nullable: true }) clienteNombre!: string | null;
   @Column({ type: 'text', default: 'ACTIVO' }) estado!: EstadoTramite;
+  /** Etapa fijada por una persona. Mientras exista, reemplaza a la que Radika calcula. */
+  @Column({ name: 'etapa_manual', type: 'text', nullable: true }) etapaManual!: Etapa | null;
+  @Column({ name: 'etapa_manual_at', type: 'timestamptz', nullable: true }) etapaManualAt!: Date | null;
+  /** Nota libre del asesor sobre el caso. */
+  @Column({ type: 'text', nullable: true }) nota!: string | null;
   @Column({ type: 'text', nullable: true }) despacho!: string | null;
   @Column({ type: 'text', nullable: true }) sujetos!: string | null;
   @Column({ name: 'fecha_radicacion', type: 'date', nullable: true }) fechaRadicacion!: string | null;

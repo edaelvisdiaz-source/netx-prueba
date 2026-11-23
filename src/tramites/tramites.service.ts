@@ -1,19 +1,49 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, QueryFailedError, Repository } from 'typeorm';
+import { FindOptionsWhere, ILike, In, QueryFailedError, Repository } from 'typeorm';
 import { hoyEnColombia } from '../terminos/dias-habiles';
-import { calcularTerminosTutela, Termino } from '../terminos/tutela';
+import { Termino } from '../terminos/tutela';
 import { Actuacion } from './actuacion.entity';
 import { ActualizarTramite, CrearTramite, ListarTramites } from './dto';
 import { EnlaceConsulta, enlacesDeConsulta } from './enlaces';
+import { Alerta, calcularSituacion, Etapa, Nivel, Situacion } from './situacion';
 import { normalizarRadicadoJudicial, normalizarRadicadoLibre } from './radicado';
 import { esFuentePortal, esTipoJudicial, fuentePorDefecto, portalDe } from './tipos';
 import { Tramite } from './tramite.entity';
 
 const PG_VIOLACION_UNICA = '23505';
+const TRAMITES_EN_PANEL = 1000;
+const VENCIMIENTOS_EN_PANEL = 10;
+const ORDEN_NIVEL: Readonly<Record<Nivel, number>> = { URGENTE: 0, PRONTO: 1, INFO: 2 };
+
+export type TramiteConSituacion = Tramite & { readonly situacion: Omit<Situacion, 'terminos'> };
+
+interface FilaPanel {
+  readonly tramiteId: string;
+  readonly tipo: Tramite['tipo'];
+  readonly radicado: string;
+  readonly tutelante: string | null;
+  readonly despacho: string | null;
+  readonly etapa: Etapa | null;
+}
+
+export interface Panel {
+  readonly totales: { readonly activos: number; readonly urgentes: number; readonly pronto: number; readonly informativos: number; readonly alDia: number };
+  readonly porEtapa: ReadonlyArray<{ readonly etapa: Etapa; readonly cantidad: number }>;
+  readonly atencion: ReadonlyArray<FilaPanel & Alerta & { readonly recomendacion: string | null }>;
+  readonly vencimientos: ReadonlyArray<FilaPanel & { readonly fechaLimite: string }>;
+  /** Hay mas tramites activos de los que el panel analiza: las alertas pueden no estar todas. */
+  readonly incompleto: boolean;
+}
+
+/** Evita que % y _ escritos por la persona actuen como comodines en la busqueda. */
+function literalLike(texto: string): string {
+  return `%${texto.replace(/[\\%_]/g, (caracter) => `\\${caracter}`)}%`;
+}
 
 export interface DetalleTramite {
   readonly tramite: Tramite;
+  readonly situacion: Omit<Situacion, 'terminos'>;
   readonly actuaciones: ReadonlyArray<Actuacion>;
   readonly terminos: ReadonlyArray<Termino>;
   readonly enlacesConsulta: ReadonlyArray<EnlaceConsulta>;
@@ -62,19 +92,79 @@ export class TramitesService {
     }
   }
 
-  async listar(filtros: ListarTramites): Promise<{ items: Tramite[]; total: number }> {
-    const where: FindOptionsWhere<Tramite> = {
+  async listar(filtros: ListarTramites): Promise<{ items: TramiteConSituacion[]; total: number }> {
+    const base: FindOptionsWhere<Tramite> = {
       ...(filtros.referenciaCrm ? { referenciaCrm: filtros.referenciaCrm } : {}),
       ...(filtros.tipo ? { tipo: filtros.tipo } : {}),
       ...(filtros.estado ? { estado: filtros.estado } : {}),
     };
+    const patron = filtros.q ? ILike(literalLike(filtros.q)) : null;
+    const where = patron
+      ? [{ ...base, radicado: patron }, { ...base, clienteNombre: patron }, { ...base, sujetos: patron }, { ...base, referenciaCrm: patron }]
+      : base;
     const [items, total] = await this.tramites.findAndCount({
       where,
       order: { createdAt: 'DESC', id: 'ASC' },
       skip: (filtros.page - 1) * filtros.limit,
       take: filtros.limit,
     });
-    return { items, total };
+    return { items: await this.conSituacion(items), total };
+  }
+
+  /** Calcula la situacion de varios tramites con una sola consulta de actuaciones. */
+  private async situaciones(tramites: ReadonlyArray<Tramite>): Promise<Map<string, Situacion>> {
+    const ids = tramites.map((tramite) => tramite.id);
+    const actuaciones = ids.length ? await this.actuaciones.find({ where: { tramiteId: In(ids) } }) : [];
+    const porTramite = new Map<string, Actuacion[]>();
+    for (const actuacion of actuaciones) {
+      const lista = porTramite.get(actuacion.tramiteId);
+      if (lista) lista.push(actuacion);
+      else porTramite.set(actuacion.tramiteId, [actuacion]);
+    }
+    const hoy = hoyEnColombia();
+    return new Map(
+      tramites.map((tramite) => [tramite.id, calcularSituacion({ ...tramite, actuaciones: porTramite.get(tramite.id) ?? [], hoy })]),
+    );
+  }
+
+  private async conSituacion(tramites: ReadonlyArray<Tramite>): Promise<TramiteConSituacion[]> {
+    const situaciones = await this.situaciones(tramites);
+    return tramites.map((tramite) => {
+      const { terminos: _terminos, ...situacion } = situaciones.get(tramite.id) as Situacion;
+      return { ...tramite, situacion };
+    });
+  }
+
+  /** Lo que necesita atencion hoy entre los tramites activos. */
+  async panel(): Promise<Panel> {
+    const [encontrados, totalActivos] = await this.tramites.findAndCount({
+      where: { estado: 'ACTIVO' }, order: { createdAt: 'DESC' }, take: TRAMITES_EN_PANEL,
+    });
+    const activos = await this.conSituacion(encontrados);
+    const fila = (tramite: TramiteConSituacion): FilaPanel => ({
+      tramiteId: tramite.id, tipo: tramite.tipo, radicado: tramite.radicado, tutelante: tramite.situacion.tutelante,
+      despacho: tramite.despacho, etapa: tramite.situacion.etapa,
+    });
+    const contar = (nivel: Nivel | null) => activos.filter((tramite) => tramite.situacion.nivel === nivel).length;
+    const etapas = new Map<Etapa, number>();
+    for (const tramite of activos) {
+      const etapa = tramite.situacion.etapa;
+      if (tramite.tipo === 'TUTELA' && etapa) etapas.set(etapa, (etapas.get(etapa) ?? 0) + 1);
+    }
+    const atencion = activos
+      .flatMap((tramite) => tramite.situacion.atencion.map((alerta) => ({ ...fila(tramite), ...alerta, recomendacion: tramite.situacion.recomendacion })))
+      .sort((a, b) => ORDEN_NIVEL[a.nivel] - ORDEN_NIVEL[b.nivel] || (a.fechaLimite ?? '9999').localeCompare(b.fechaLimite ?? '9999'));
+    const vencimientos = activos
+      .flatMap((tramite) => (tramite.situacion.proximoVencimiento ? [{ ...fila(tramite), fechaLimite: tramite.situacion.proximoVencimiento }] : []))
+      .sort((a, b) => a.fechaLimite.localeCompare(b.fechaLimite))
+      .slice(0, VENCIMIENTOS_EN_PANEL);
+    return {
+      totales: { activos: totalActivos, urgentes: contar('URGENTE'), pronto: contar('PRONTO'), informativos: contar('INFO'), alDia: contar(null) },
+      porEtapa: [...etapas].map(([etapa, cantidad]) => ({ etapa, cantidad })).sort((a, b) => b.cantidad - a.cantidad),
+      atencion,
+      vencimientos,
+      incompleto: totalActivos > activos.length,
+    };
   }
 
   async obtener(id: string): Promise<Tramite> {
@@ -89,17 +179,15 @@ export class TramitesService {
       where: { tramiteId: id },
       order: { fecha: 'DESC', detectadaAt: 'DESC' },
     });
-    const terminos =
-      tramite.tipo === 'TUTELA'
-        ? calcularTerminosTutela({ fechaRadicacion: tramite.fechaRadicacion, actuaciones, hoy: hoyEnColombia() })
-        : [];
-    return { tramite, actuaciones, terminos, enlacesConsulta: enlacesDeConsulta(tramite.tipo, tramite.radicado) };
+    const { terminos, ...situacion } = calcularSituacion({ ...tramite, actuaciones, hoy: hoyEnColombia() });
+    return { tramite, situacion, actuaciones, terminos, enlacesConsulta: enlacesDeConsulta(tramite.tipo, tramite.radicado) };
   }
 
   async actualizar(id: string, cambios: ActualizarTramite): Promise<Tramite> {
     const actual = await this.obtener(id);
     const reactivado = cambios.estado === 'ACTIVO' && actual.estado !== 'ACTIVO';
-    await this.tramites.update({ id }, { ...cambios, ...(reactivado ? { proximaRevisionAt: new Date() } : {}) });
+    const etapa = cambios.etapaManual === undefined ? {} : { etapaManualAt: cambios.etapaManual ? new Date() : null };
+    await this.tramites.update({ id }, { ...cambios, ...etapa, ...(reactivado ? { proximaRevisionAt: new Date() } : {}) });
     return this.obtener(id);
   }
 

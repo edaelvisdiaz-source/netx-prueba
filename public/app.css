@@ -39,4 +39,13 @@ td { padding: 10px 8px; border-bottom: 1px solid #eef0f3; vertical-align: top; }
 .resumen { background: #f6f7fb; border-radius: 7px; padding: 8px 10px; margin-top: 6px; font-size: 14px; }
 .vacio { text-align: center; color: var(--tenue); padding: 26px 10px; }
 dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 14px; margin: 0; } dt { color: var(--tenue); font-size: 13px; } dd { margin: 0; }
+.cifras { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); } .cifra { margin: 0; } .cifra .numero { font-size: 30px; font-weight: 700; line-height: 1.1; }
+.cifra.mal { border-color: var(--mal); background: var(--mal-fondo); } .cifra.mal .numero { color: var(--mal); }
+.cifra.aviso-c { border-color: #e2b65a; background: var(--aviso-fondo); } .cifra.aviso-c .numero { color: var(--aviso); } .cifra.ok .numero { color: var(--ok); }
+.cifras { margin-bottom: 14px; } .dos { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: start; } .dos .tarjeta { margin-bottom: 0; }
+.alerta { border-left: 4px solid var(--info); background: #f8f9fb; border-radius: 0 7px 7px 0; padding: 10px 12px; margin-bottom: 8px; }
+.alerta.mal { border-left-color: var(--mal); } .alerta.aviso-c { border-left-color: #d49a1e; } .alerta.clic { cursor: pointer; } .alerta.clic:hover { background: #f0f2f6; }
+.nota-estado { font-size: 17px; font-weight: 600; margin: 0 0 6px; }
+.recomendacion { background: var(--info-fondo); border-radius: 7px; padding: 10px 12px; margin-top: 10px; } .recomendacion .tenue { font-size: 13px; margin-top: 4px; }
+.barra-etapa { margin-bottom: 10px; } .pista { background: #eceef2; border-radius: 99px; height: 8px; margin-top: 4px; } .relleno { background: var(--marca); border-radius: 99px; height: 8px; min-width: 8px; }
 @media (max-width: 640px) { .ocultar-movil { display: none; } .barra .quien { width: 100%; margin: 0 0 10px; } }

@@ -18,6 +18,15 @@ const NOVEDADES = {
   TERMINO_VENCIDO: 'Término vencido', ERROR_FUENTE: 'Problema al consultar',
 };
 const TERMINOS = { EN_CURSO: ['En curso', 'info'], POR_VENCER: ['Por vencer', 'aviso-c'], VENCIDO: ['Vencido', 'mal'], CUMPLIDO: ['Cumplido', 'ok'] };
+const ETAPAS = {
+  SIN_DATOS: ['Sin datos', ''], RADICADA: ['Radicada', 'info'], REQUERIMIENTO: ['Requerimiento', 'mal'], ADMITIDA: ['Admitida', 'info'],
+  FALLO_FAVORABLE: ['Fallo a favor', 'ok'], FALLO_DESFAVORABLE: ['Fallo en contra', 'mal'], CARENCIA_OBJETO: ['Carencia de objeto', 'aviso-c'],
+  FALLO_SIN_CLASIFICAR: ['Fallo por revisar', 'aviso-c'], IMPUGNADA: ['Impugnada', 'aviso-c'], DESACATO: ['Desacato', 'mal'], EN_CORTE: ['En la Corte', ''],
+  CUMPLIDA: ['Cumplida', 'ok'],
+};
+const NIVELES = { URGENTE: ['Urgente', 'mal'], PRONTO: ['Pronto', 'aviso-c'], INFO: ['Para revisar', 'info'] };
+const TRAMITES_POR_PAGINA = 50;
+const ESPERA_BUSQUEDA_MS = 350;
 const MOTIVOS = { SIN_RADICADO: 'No trae radicado', SIN_TRAMITE: 'El trámite no está registrado', AMBIGUO: 'Coincide con varios trámites' };
 
 /** Crea un elemento. Los hijos de tipo texto se insertan como texto. */
@@ -27,6 +36,7 @@ function h(etiqueta, atributos, ...hijos) {
     if (valor === null || valor === undefined || valor === false) continue;
     if (nombre.startsWith('on')) elemento.addEventListener(nombre.slice(2), valor);
     else if (nombre === 'class') elemento.className = valor;
+    else if (nombre === 'style') elemento.style.cssText = valor; // por CSSOM: la politica de contenido bloquea el atributo style
     else elemento.setAttribute(nombre, valor === true ? '' : valor);
   }
   for (const hijo of hijos.flat()) {
@@ -79,6 +89,10 @@ const campo = (etiqueta, control) => {
   control.id = id;
   return h('div', { class: 'campo' }, h('label', { for: id }, etiqueta), control);
 };
+const chipEtapa = (situacion) => (situacion.etapa ? chip(...(ETAPAS[situacion.etapa] || [situacion.etapa, ''])) : null);
+const chipNivel = (nivel) => (nivel ? chip(...NIVELES[nivel]) : chip('Al día', 'ok'));
+const nombreDe = (tramite, situacion) => situacion.tutelante || tramite.clienteNombre || 'Sin nombre registrado';
+const irA = (destino) => ({ class: 'clic', tabindex: 0, onclick: () => (location.hash = destino), onkeydown: (e) => e.key === 'Enter' && (location.hash = destino) });
 const opciones = (mapa, elegido, vacio) => [
   vacio ? h('option', { value: '' }, vacio) : null,
   ...Object.entries(mapa).map(([valor, texto]) => h('option', { value: valor, selected: valor === elegido }, Array.isArray(texto) ? texto[0] : texto)),
@@ -116,7 +130,7 @@ function pantallaIngreso() {
       evento.preventDefault();
       conBoton(boton, mensaje, async () => {
         estado.usuario = (await api('POST', '/v1/sesion', { email: email.value, clave: clave.value })).data.usuario;
-        location.hash = '#/tramites';
+        location.hash = '#/inicio';
         pintar();
       });
     },
@@ -137,7 +151,7 @@ function pantallaCambioClave(obligatorio) {
         if (nueva.value !== repetir.value) throw new ErrorApi('Las dos claves nuevas no coinciden');
         await api('PUT', '/v1/sesion/clave', { actual: actual.value, nueva: nueva.value });
         estado.usuario = { ...estado.usuario, debeCambiarClave: false };
-        location.hash = '#/tramites';
+        location.hash = '#/inicio';
         pintar();
       });
     },
@@ -147,35 +161,79 @@ function pantallaCambioClave(obligatorio) {
     h('div', { class: 'tarjeta' }, formulario));
 }
 
+async function pantallaInicio() {
+  const cuerpo = h('div', {}, h('p', { class: 'cargando' }, 'Cargando…'));
+  const cifra = (numero, texto, clase) => h('div', { class: `tarjeta cifra ${clase || ''}` }, h('div', { class: 'numero' }, numero), h('div', { class: 'tenue' }, texto));
+  api('GET', '/v1/panel').then(({ data }) => {
+    const maximo = Math.max(1, ...data.porEtapa.map((e) => e.cantidad));
+    poner(cuerpo,
+      data.incompleto ? aviso('Hay más trámites activos de los que este tablero analiza. Cierra los que ya terminaron para ver todas las alertas.', 'mal') : null,
+      h('div', { class: 'rejilla cifras' }, cifra(data.totales.activos, 'Trámites activos'), cifra(data.totales.urgentes, 'Urgentes', data.totales.urgentes ? 'mal' : ''),
+        cifra(data.totales.pronto, 'Para atender pronto', data.totales.pronto ? 'aviso-c' : ''), cifra(data.totales.alDia, 'Al día', 'ok')),
+      h('div', { class: 'tarjeta' }, h('h2', {}, `Requiere atención (${data.atencion.length})`),
+        data.atencion.length === 0 ? h('p', { class: 'vacio' }, 'Nada pendiente: todos los trámites activos están al día.')
+          : data.atencion.map((a) => h('div', { ...irA(`#/tramites/${a.tramiteId}`), class: `clic alerta ${NIVELES[a.nivel][1]}`, role: 'link' },
+            h('div', { class: 'fila entre' }, h('strong', {}, a.tutelante || 'Sin nombre registrado'), h('span', { class: 'fila' }, a.etapa ? chip(...ETAPAS[a.etapa]) : null, chipNivel(a.nivel))),
+            h('div', {}, a.motivo),
+            a.recomendacion ? h('div', { class: 'tenue' }, a.recomendacion) : null,
+            h('div', { class: 'mono tenue' }, `${a.radicado}${a.despacho ? ` · ${a.despacho}` : ''}`)))),
+      h('div', { class: 'rejilla dos' },
+        h('div', { class: 'tarjeta' }, h('h2', {}, 'Próximos vencimientos'),
+          data.vencimientos.length === 0 ? h('p', { class: 'vacio' }, 'No hay plazos corriendo.')
+            : h('table', {}, h('tbody', {}, data.vencimientos.map((v) => h('tr', irA(`#/tramites/${v.tramiteId}`),
+              h('td', {}, h('strong', {}, fecha(v.fechaLimite))), h('td', {}, v.tutelante || v.radicado, h('div', { class: 'tenue' }, v.etapa ? ETAPAS[v.etapa][0] : ''))))))),
+        h('div', { class: 'tarjeta' }, h('h2', {}, 'Tutelas por etapa'),
+          data.porEtapa.length === 0 ? h('p', { class: 'vacio' }, 'Aún no hay tutelas activas.')
+            : data.porEtapa.map((e) => h('div', { class: 'barra-etapa' }, h('div', { class: 'fila entre' }, h('span', {}, ETAPAS[e.etapa][0]), h('strong', {}, e.cantidad)),
+              h('div', { class: 'pista' }, h('div', { class: 'relleno', style: `width:${Math.round((e.cantidad / maximo) * 100)}%` })))))));
+  }).catch((error) => (error.codigoHttp === 401 ? salirLocal() : poner(cuerpo, aviso(error.message, 'mal'))));
+  return h('main', {}, h('div', { class: 'fila entre' }, h('div', {}, h('h1', {}, 'Inicio'), h('p', { class: 'tenue' }, 'Lo que necesita tu atención hoy. Los plazos son estimados: se cuentan desde las fechas que publica el juzgado.')),
+    h('button', { onclick: () => (location.hash = '#/nuevo') }, 'Nuevo trámite')), cuerpo);
+}
+
 async function pantallaTramites() {
-  const filtros = { tipo: h('select', {}, opciones(TIPOS, '', 'Todos los tipos')), estado: h('select', {}, opciones(ESTADOS, 'ACTIVO', 'Todos los estados')), referencia: h('input', { type: 'search', placeholder: 'Código de la venta' }) };
+  const filtros = { buscar: h('input', { type: 'search', placeholder: 'Nombre, radicado, entidad o código' }), tipo: h('select', {}, opciones(TIPOS, '', 'Todos los tipos')), estado: h('select', {}, opciones(ESTADOS, 'ACTIVO', 'Todos los estados')) };
   const lista = h('div', { class: 'tarjeta' });
+  let pagina = 1;
+  let pedido = 0;
   const cargar = async () => {
-    const consulta = new URLSearchParams({ limit: '100' });
+    const turno = ++pedido;
+    const consulta = new URLSearchParams({ limit: String(TRAMITES_POR_PAGINA), page: String(pagina) });
     if (filtros.tipo.value) consulta.set('tipo', filtros.tipo.value);
     if (filtros.estado.value) consulta.set('estado', filtros.estado.value);
-    if (filtros.referencia.value.trim()) consulta.set('referenciaCrm', filtros.referencia.value.trim());
+    if (filtros.buscar.value.trim().length >= 2) consulta.set('q', filtros.buscar.value.trim());
     lista.replaceChildren(h('p', { class: 'cargando' }, 'Cargando…'));
     try {
       const { data, meta } = await api('GET', `/v1/tramites?${consulta}`);
-      if (data.length === 0) return lista.replaceChildren(h('p', { class: 'vacio' }, 'No hay trámites con esos filtros. Usa «Nuevo trámite» para registrar el primero.'));
-      lista.replaceChildren(
-        h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Trámite'), h('th', {}, 'Cliente'), h('th', { class: 'ocultar-movil' }, 'Última actuación'), h('th', {}, 'Estado'))),
-          h('tbody', {}, data.map((t) => h('tr', { class: 'clic', tabindex: 0, onclick: () => (location.hash = `#/tramites/${t.id}`), onkeydown: (e) => e.key === 'Enter' && (location.hash = `#/tramites/${t.id}`) },
-            h('td', {}, h('div', {}, TIPOS[t.tipo] || t.tipo), h('div', { class: 'mono tenue' }, t.radicado)),
-            h('td', {}, t.clienteNombre || '—', t.referenciaCrm ? h('div', { class: 'tenue' }, t.referenciaCrm) : null),
-            h('td', { class: 'ocultar-movil' }, fecha(t.ultimaActuacionFecha), t.despacho ? h('div', { class: 'tenue' }, t.despacho) : null),
-            h('td', {}, t.ultimoError ? chip('Revisar', 'mal') : chip(ESTADOS[t.estado], t.estado === 'ACTIVO' ? 'ok' : ''), t.fuente === 'MANUAL' ? h('div', { class: 'tenue' }, 'Seguimiento manual') : null))))),
-        h('p', { class: 'tenue' }, `${meta.total} trámite(s)`));
+      if (turno !== pedido) return; // llegó una búsqueda más nueva
+      if (data.length === 0) return lista.replaceChildren(h('p', { class: 'vacio' }, 'No hay trámites con esos filtros. Usa «Nuevo trámite» para registrar uno.'));
+      const paginas = Math.ceil(meta.total / TRAMITES_POR_PAGINA);
+      const cambiar = (delta) => () => { pagina += delta; cargar(); };
+      poner(lista,
+        h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, 'Tutelante / cliente'), h('th', {}, 'Etapa'), h('th', { class: 'ocultar-movil' }, 'Último movimiento'), h('th', {}, 'Atención'))),
+          h('tbody', {}, data.map((t) => {
+            const s = t.situacion;
+            return h('tr', irA(`#/tramites/${t.id}`),
+              h('td', {}, h('strong', {}, nombreDe(t, s)), h('div', { class: 'mono tenue' }, t.radicado), h('div', { class: 'tenue' }, [TIPOS[t.tipo], t.despacho].filter(Boolean).join(' · '))),
+              h('td', {}, chipEtapa(s) || chip(ESTADOS[t.estado], ''), s.esManual ? h('div', { class: 'tenue' }, 'Fijada a mano') : null, t.estado !== 'ACTIVO' ? h('div', { class: 'tenue' }, ESTADOS[t.estado]) : null),
+              h('td', { class: 'ocultar-movil' }, s.ultimaNovedad ? [h('div', {}, s.ultimaNovedad.titulo), h('div', { class: 'tenue' }, [fecha(s.ultimaNovedad.fecha), s.ultimaNovedad.anotacion].filter(Boolean).join(' · '))] : h('span', { class: 'tenue' }, 'Sin movimientos')),
+              h('td', {}, t.estado === 'ACTIVO' ? chipNivel(s.nivel) : h('span', { class: 'tenue' }, '—'), s.atencion[0] ? h('div', { class: 'tenue' }, s.atencion[0].motivo) : null));
+          }))),
+        h('div', { class: 'fila entre' }, h('p', { class: 'tenue' }, `${meta.total} trámite(s)${paginas > 1 ? ` · página ${pagina} de ${paginas}` : ''}`),
+          paginas > 1 ? h('div', { class: 'fila' }, h('button', { class: 'secundario', type: 'button', disabled: pagina <= 1, onclick: cambiar(-1) }, 'Anterior'), h('button', { class: 'secundario', type: 'button', disabled: pagina >= paginas, onclick: cambiar(1) }, 'Siguiente')) : null));
     } catch (error) {
       if (error.codigoHttp === 401) return salirLocal();
       lista.replaceChildren(aviso(error.message, 'mal'));
     }
   };
-  for (const control of Object.values(filtros)) control.addEventListener('change', cargar);
+  const desdeElInicio = () => { pagina = 1; cargar(); };
+  let espera;
+  filtros.buscar.addEventListener('input', () => { clearTimeout(espera); espera = setTimeout(desdeElInicio, ESPERA_BUSQUEDA_MS); });
+  filtros.tipo.addEventListener('change', desdeElInicio);
+  filtros.estado.addEventListener('change', desdeElInicio);
   cargar();
   return h('main', {}, h('div', { class: 'fila entre' }, h('h1', {}, 'Trámites'), h('button', { onclick: () => (location.hash = '#/nuevo') }, 'Nuevo trámite')),
-    h('div', { class: 'tarjeta rejilla' }, campo('Tipo', filtros.tipo), campo('Estado', filtros.estado), campo('Buscar por código', filtros.referencia)), lista);
+    h('div', { class: 'tarjeta rejilla' }, campo('Buscar', filtros.buscar), campo('Tipo', filtros.tipo), campo('Estado', filtros.estado)), lista);
 }
 
 function pantallaNuevo() {
@@ -218,7 +276,16 @@ async function pantallaDetalle(id) {
       return contenedor.replaceChildren(aviso(error.message, 'mal'), h('a', { href: '#/tramites' }, 'Volver a la lista'));
     }
     const t = d.tramite;
+    const s = d.situacion;
     const mensaje = h('div');
+    const guardar = (cambios) => api('PATCH', `/v1/tramites/${id}`, cambios);
+    const etapa = h('select', {}, h('option', { value: '' }, s.etapaAutomatica ? `Automática (Radika detecta: ${ETAPAS[s.etapaAutomatica][0]})` : 'Sin etapa'), opciones(ETAPAS, s.esManual ? s.etapa : ''));
+    etapa.addEventListener('change', () => conBoton(etapa, mensaje, async () => { await guardar({ etapaManual: etapa.value || null }); await cargar(); }));
+    const nombre = h('input', { maxlength: 160, value: t.clienteNombre || '', placeholder: s.tutelante || '' });
+    const codigo = h('input', { maxlength: 64, value: t.referenciaCrm || '' });
+    const nota = h('textarea', { maxlength: 1000, placeholder: 'Por ejemplo: la clienta confirmó que ya recibió la resolución' }, t.nota || '');
+    const botonDatos = h('button', { type: 'submit', class: 'secundario' }, 'Guardar');
+    const mensajeDatos = h('div');
     const accion = (texto, clase, hacer) => {
       const boton = h('button', { type: 'button', class: clase }, texto);
       boton.addEventListener('click', () => conBoton(boton, mensaje, async () => { await hacer(); await cargar(); }));
@@ -232,14 +299,22 @@ async function pantallaDetalle(id) {
 
     poner(contenedor,
       h('p', {}, h('a', { href: '#/tramites' }, '← Trámites')),
-      h('div', { class: 'fila entre' }, h('div', {}, h('h1', {}, TIPOS[t.tipo] || t.tipo), h('div', { class: 'mono tenue' }, t.radicado)), chip(ESTADOS[t.estado], t.estado === 'ACTIVO' ? 'ok' : '')),
+      h('div', { class: 'fila entre' }, h('div', {}, h('h1', {}, nombreDe(t, s)), h('div', { class: 'tenue' }, `${TIPOS[t.tipo] || t.tipo} · `, h('span', { class: 'mono' }, t.radicado))),
+        h('span', { class: 'fila' }, chipEtapa(s), chip(ESTADOS[t.estado], t.estado === 'ACTIVO' ? 'ok' : ''))),
       t.ultimoError ? aviso(`Última revisión: ${t.ultimoError}`, 'mal') : null,
       mensaje,
+      h('div', { class: 'tarjeta' }, h('h2', {}, 'En qué va'),
+        h('p', { class: 'nota-estado' }, s.nota),
+        s.ultimaNovedad && s.ultimaNovedad.anotacion ? h('p', { class: 'tenue' }, `${fecha(s.ultimaNovedad.fecha)} · ${s.ultimaNovedad.anotacion}`) : null,
+        s.atencion.map((a) => h('div', { class: `alerta ${NIVELES[a.nivel][1]}` }, h('span', { class: 'fila' }, chipNivel(a.nivel), a.motivo))),
+        s.recomendacion ? h('div', { class: 'recomendacion' }, h('strong', {}, 'Qué conviene hacer'), h('div', {}, s.recomendacion),
+          h('div', { class: 'tenue' }, 'Orientación general según la etapa. Confírmala leyendo la providencia; los plazos reales corren desde la notificación.')) : null,
+        t.tipo === 'TUTELA' ? h('div', { class: 'acciones' }, campo('Etapa del caso', etapa),
+          h('p', { class: 'tenue' }, s.esManual ? 'Etapa fijada a mano: Radika no la cambiará sola, pero te avisará si llega una novedad distinta. Elige «Automática» para devolverle el control.' : 'Radika la actualiza sola con cada actuación. Puedes fijar otra si conoces algo que la consulta no muestra.')) : null),
       h('div', { class: 'tarjeta' }, h('dl', {},
-        h('dt', {}, 'Cliente'), h('dd', {}, t.clienteNombre || '—'),
-        h('dt', {}, 'Código de la venta'), h('dd', {}, t.referenciaCrm || '—'),
+        h('dt', {}, 'Tutelante'), h('dd', {}, s.tutelante || '—'),
+        h('dt', {}, 'Accionado'), h('dd', {}, s.accionado || '—'),
         h('dt', {}, 'Despacho'), h('dd', {}, t.despacho || '—'),
-        h('dt', {}, 'Partes'), h('dd', {}, t.sujetos || '—'),
         h('dt', {}, 'Radicado el'), h('dd', {}, fecha(t.fechaRadicacion)),
         h('dt', {}, 'Seguimiento'), h('dd', {}, t.fuente === 'MANUAL' ? 'Manual' : `Automático · última revisión ${fechaHora(t.ultimaRevisionAt)}`)),
         h('div', { class: 'fila acciones' },
@@ -247,6 +322,15 @@ async function pantallaDetalle(id) {
           t.estado === 'ACTIVO' ? accion('Pausar', 'secundario', () => api('PATCH', `/v1/tramites/${id}`, { estado: 'PAUSADO' })) : null,
           t.estado !== 'ACTIVO' ? accion('Reactivar', 'secundario', () => api('PATCH', `/v1/tramites/${id}`, { estado: 'ACTIVO' })) : null,
           t.estado !== 'CERRADO' ? accion('Cerrar trámite', 'peligro', () => (confirm('¿Cerrar este trámite? Dejará de revisarse.') ? api('PATCH', `/v1/tramites/${id}`, { estado: 'CERRADO' }) : null)) : null)),
+      h('div', { class: 'tarjeta' }, h('h2', {}, 'Datos del cliente y nota'), h('form', {
+        onsubmit: (evento) => {
+          evento.preventDefault();
+          conBoton(botonDatos, mensajeDatos, async () => {
+            await guardar({ clienteNombre: nombre.value.trim() || null, referenciaCrm: codigo.value.trim() || null, nota: nota.value.trim() || null });
+            await cargar();
+          });
+        },
+      }, h('div', { class: 'rejilla' }, campo('Nombre del cliente', nombre), campo('Código de la venta', codigo)), campo('Nota del asesor', nota), mensajeDatos, botonDatos)),
       d.terminos.length ? h('div', { class: 'tarjeta' }, h('h2', {}, 'Términos (estimados)'), d.terminos.map((termino) => h('div', { class: 'fila entre termino' },
         h('div', {}, termino.descripcion, h('div', { class: 'tenue' }, `Límite: ${fecha(termino.fechaLimite)} · ${termino.diasHabilesRestantes >= 0 ? `faltan ${termino.diasHabilesRestantes} día(s) hábil(es)` : `venció hace ${-termino.diasHabilesRestantes} día(s) hábil(es)`}`)),
         chip(...TERMINOS[termino.estado])))) : null,
@@ -354,13 +438,13 @@ function barra(ruta) {
   const enlace = (destino, texto) => h('a', { href: destino, class: ruta.startsWith(destino.slice(1)) ? 'activa' : '' }, texto);
   const salir = h('button', { class: 'enlace', type: 'button' }, 'Salir');
   salir.addEventListener('click', async () => { await api('DELETE', '/v1/sesion').catch(() => null); salirLocal(); });
-  return h('nav', { class: 'barra', 'aria-label': 'Principal' }, h('span', { class: 'logo' }, 'Radika'), enlace('#/tramites', 'Trámites'), enlace('#/novedades', 'Novedades'), enlace('#/correos', 'Correos'),
+  return h('nav', { class: 'barra', 'aria-label': 'Principal' }, h('span', { class: 'logo' }, 'Radika'), enlace('#/inicio', 'Inicio'), enlace('#/tramites', 'Trámites'), enlace('#/novedades', 'Novedades'), enlace('#/correos', 'Correos'),
     estado.usuario.rol === 'ADMIN' ? enlace('#/usuarios', 'Usuarios') : null,
     h('span', { class: 'quien' }, estado.usuario.nombre, h('a', { href: '#/clave' }, 'Cambiar clave'), salir));
 }
 
 async function pintar() {
-  const ruta = location.hash.slice(1) || '/tramites';
+  const ruta = location.hash.slice(1) || '/inicio';
   if (!estado.usuario) return raiz.replaceChildren(pantallaIngreso());
   if (estado.usuario.debeCambiarClave) return raiz.replaceChildren(pantallaCambioClave(true));
   const detalle = ruta.match(/^\/tramites\/([0-9a-f-]{36})$/);
@@ -370,7 +454,8 @@ async function pintar() {
     : ruta === '/correos' ? pantallaCorreos()
     : ruta === '/clave' ? pantallaCambioClave(false)
     : ruta === '/usuarios' && estado.usuario.rol === 'ADMIN' ? pantallaUsuarios()
-    : pantallaTramites();
+    : ruta.startsWith('/tramites') ? pantallaTramites()
+    : pantallaInicio();
   raiz.replaceChildren(barra(ruta), await pantalla);
 }
 
