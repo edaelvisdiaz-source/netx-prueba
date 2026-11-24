@@ -212,3 +212,12 @@ test('repetir la lectura exige sesion y lanza la tarea', async () => {
   assert.equal(respuesta.statusCode, 200);
   assert.deepEqual(tareas, [{ tarea: 'leer', id: 'venta-1' }]);
 });
+
+test('el codigo de las dos paginas es JavaScript valido', async () => {
+  const { PAGINA } = await import('./pagina.mjs');
+  const { FORMULARIO } = await import('./formulario.mjs');
+  for (const pagina of [PAGINA, FORMULARIO]) {
+    const codigo = pagina.split('<script nonce="__NONCE__">')[1].split('</script>')[0];
+    assert.doesNotThrow(() => new Function(codigo));
+  }
+});
