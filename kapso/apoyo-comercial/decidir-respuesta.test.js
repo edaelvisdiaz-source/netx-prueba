@@ -7,8 +7,23 @@ const { join } = require('node:path');
 const { handler } = new Function(`${readFileSync(join(__dirname, 'decidir-respuesta.js'), 'utf8')}; return { handler };`)();
 const contexto = (respuesta, enviar_tarifa) => ({ vars: { respuesta, enviar_tarifa }, context: { phone_number: '573001234567' }, system: { whatsapp_config: { phone_number_id: '111' } } });
 const almacen = (inicial = {}) => { const datos = new Map(Object.entries(inicial)); return { get: async (k) => datos.get(k) ?? null, put: async (k, v) => datos.set(k, v) }; };
+/** Base de datos en memoria con la unica operacion que usa la funcion: el candado por telefono. */
+function base() {
+  const ultimas = new Map();
+  const sentencia = (sql, valores = []) => ({
+    bind: (...nuevos) => sentencia(sql, nuevos),
+    run: async () => {
+      if (!sql.startsWith('INSERT')) return { meta: { changes: 0 } };
+      const [telefono, ahora, limite] = valores;
+      if (ultimas.has(telefono) && !(ultimas.get(telefono) < limite)) return { meta: { changes: 0 } };
+      ultimas.set(telefono, ahora);
+      return { meta: { changes: 1 } };
+    },
+  });
+  return { prepare: (sql) => sentencia(sql) };
+}
 async function llamar(cuerpo, entorno = {}) {
-  const env = { KV: almacen(), ...entorno };
+  const env = { KV: almacen(), DB: base(), ...entorno };
   return (await handler(new Request('https://f.local', { method: 'POST', body: JSON.stringify(cuerpo) }), env)).json();
 }
 
@@ -65,9 +80,9 @@ test('si no hay imagen configurada envia solo el texto y lo anota', async (t) =>
 
 test('si el cliente escribe dos mensajes seguidos solo sale una respuesta', async (t) => {
   const espia = t.mock.method(globalThis, 'fetch', async () => new Response('{}'));
-  const KV = almacen();
+  const DB = base();
   const pedido = { available_edges: ['enviar', 'callar'], execution_context: contexto('Hola') };
-  assert.equal((await llamar(pedido, { KAPSO_API_KEY: 'llave', KV })).vars.envio, 'enviado');
-  assert.match((await llamar(pedido, { KAPSO_API_KEY: 'llave', KV })).vars.envio, /omitido/);
+  assert.equal((await llamar(pedido, { KAPSO_API_KEY: 'llave', DB })).vars.envio, 'enviado');
+  assert.match((await llamar(pedido, { KAPSO_API_KEY: 'llave', DB })).vars.envio, /omitido/);
   assert.equal(espia.mock.callCount(), 1);
 });

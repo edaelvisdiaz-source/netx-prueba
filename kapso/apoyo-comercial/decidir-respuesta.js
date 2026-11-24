@@ -28,13 +28,18 @@ async function enviar(env, lineaId, telefono, texto, conTarifa) {
   return deLaImagen && deLaImagen !== 'enviado' ? `${delTexto}; imagen ${deLaImagen}` : delTexto;
 }
 
-/** Marca que se le va a responder a este cliente; devuelve true si ya se le respondio hace un momento. */
+/**
+ * Marca que se le va a responder a este cliente; devuelve true si ya se le respondio hace un momento.
+ * Usa la base de datos y no el almacen KV, porque KV tarda en reflejar lo recien escrito y dos
+ * ejecuciones simultaneas no se verian entre si.
+ */
 async function acabaDeResponder(env, telefono) {
-  const clave = `apoyo:respondido:${telefono}`;
-  const ultima = Number(await env.KV.get(clave)) || 0;
-  if (Date.now() - ultima < SEGUNDOS_ENTRE_RESPUESTAS * 1000) return true;
-  await env.KV.put(clave, String(Date.now()), { expirationTtl: 3600 });
-  return false;
+  const ahora = Date.now();
+  await env.DB.prepare('CREATE TABLE IF NOT EXISTS apoyo_respuestas (telefono TEXT PRIMARY KEY, ultima INTEGER NOT NULL)').run();
+  const escrito = await env.DB.prepare(
+    'INSERT INTO apoyo_respuestas (telefono, ultima) VALUES (?1, ?2) ON CONFLICT(telefono) DO UPDATE SET ultima = ?2 WHERE ultima < ?3',
+  ).bind(telefono, ahora, ahora - SEGUNDOS_ENTRE_RESPUESTAS * 1000).run();
+  return (escrito.meta?.changes ?? 0) === 0;
 }
 
 async function handler(request, env) {
