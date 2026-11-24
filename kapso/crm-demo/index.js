@@ -20,13 +20,16 @@ const ETAPAS_MANUALES = ['Radicado en el MEN', 'Enviado', 'Apostillado'];
 const DOCUMENTOS_OBLIGATORIOS = ['titulo', 'notas', 'cedula'];
 // Direccion publica de la pantalla; el formulario de cada venta es esta direccion mas su codigo.
 const ENLACE_FORMULARIO = 'https://y5b7snu3g3rvlebookdtwtagiq0yjksw.lambda-url.us-east-1.on.aws/f/';
+const MONEDAS = ['COP', 'EUR'];
+// Al convertir entre monedas la tasa del banco nunca es exacta: se acepta esta diferencia.
+const TOLERANCIA_AL_CONVERTIR = 0.03;
 const MAXIMO_TEXTO = 500;
 const MAXIMO_LISTA = 200;
 const DIGITOS_PARA_COMPARAR = 10;
 const TABLA = `CREATE TABLE IF NOT EXISTS demo_ventas (
   id TEXT PRIMARY KEY, creada TEXT NOT NULL, actualizada TEXT NOT NULL, cliente TEXT, telefono TEXT NOT NULL,
   servicio TEXT NOT NULL, valor INTEGER NOT NULL, asesora TEXT NOT NULL, estado_pago TEXT NOT NULL,
-  estado_registro TEXT NOT NULL, pago TEXT, registro TEXT, historial TEXT NOT NULL, etapa_manual TEXT, codigo TEXT)`;
+  estado_registro TEXT NOT NULL, pago TEXT, registro TEXT, historial TEXT NOT NULL, etapa_manual TEXT, codigo TEXT, moneda TEXT, tasa REAL)`;
 
 class ErrorDeUso extends Error {}
 
@@ -72,6 +75,30 @@ function compararPago(valorEsperado, valorPagado) {
   const diferencia = valorPagado - valorEsperado;
   if (diferencia === 0) return { resultado: 'coincide', diferencia };
   return { resultado: diferencia < 0 ? 'pago menor' : 'pago mayor', diferencia };
+}
+
+function leerMoneda(valor) {
+  const limpia = texto(valor).toUpperCase();
+  if (/EUR|€/.test(limpia)) return 'EUR';
+  if (/COP|PESO|\$/.test(limpia)) return 'COP';
+  return limpia;
+}
+
+/**
+ * Compara el pago con la venta teniendo en cuenta la moneda. Si el cliente paga en la otra moneda
+ * se convierte con la tasa de la venta (pesos por euro) y se acepta una pequena diferencia.
+ */
+function compararConMoneda(venta, valorPagado, monedaDelPago) {
+  const monedaVenta = venta.moneda || 'COP';
+  const monedaPago = leerMoneda(monedaDelPago) || monedaVenta;
+  if (valorPagado === null) return { resultado: 'valor no legible', diferencia: null, moneda: monedaPago, esperado: venta.valor };
+  if (monedaPago === monedaVenta) return { ...compararPago(venta.valor, valorPagado), moneda: monedaPago, esperado: venta.valor };
+  const convertible = MONEDAS.includes(monedaPago) && venta.tasa > 0;
+  if (!convertible) return { resultado: 'moneda distinta', diferencia: null, moneda: monedaPago, esperado: venta.valor };
+  const esperado = Math.round(monedaPago === 'COP' ? venta.valor * venta.tasa : venta.valor / venta.tasa);
+  const diferencia = valorPagado - esperado;
+  const dentro = Math.abs(diferencia) <= esperado * TOLERANCIA_AL_CONVERTIR;
+  return { resultado: dentro ? 'coincide' : diferencia < 0 ? 'pago menor' : 'pago mayor', diferencia, moneda: monedaPago, esperado, convertido: true };
 }
 
 function estadoDelRegistro(recibidos, correo) {
@@ -180,6 +207,10 @@ async function crearVenta(env, datos, ahora) {
   if (telefono.length < 10) throw new ErrorDeUso('El telefono debe tener al menos 10 digitos');
   if (!valor || valor <= 0) throw new ErrorDeUso('El valor de la venta debe ser mayor que cero');
   if (!servicio) throw new ErrorDeUso('Falta el servicio');
+  const moneda = leerMoneda(datos.moneda) || 'COP';
+  if (!MONEDAS.includes(moneda)) throw new ErrorDeUso('La moneda debe ser COP o EUR');
+  const tasa = leerValor(datos.tasa);
+  if (moneda === 'EUR' && !(tasa > 0)) throw new ErrorDeUso('Para cotizar en euros escribe la tasa de cambio (pesos por euro)');
   let asesora = texto(datos.asesora);
   if (!asesora) {
     const turno = Number(await env.KV.get('demo:turno')) || 0;
@@ -188,12 +219,12 @@ async function crearVenta(env, datos, ahora) {
     await env.KV.put('demo:turno', String(decision.turno));
   }
   const venta = {
-    id: crypto.randomUUID(), creada: ahora, actualizada: ahora, cliente: texto(datos.cliente), telefono, servicio, valor, asesora,
+    id: crypto.randomUUID(), creada: ahora, actualizada: ahora, cliente: texto(datos.cliente), telefono, servicio, valor, moneda, tasa: tasa > 0 ? tasa : null, asesora,
     estado_pago: PAGO.SIN_SOPORTE, estado_registro: REGISTRO.PENDIENTE, pago: null, registro: null, etapa_manual: null,
     codigo: nuevoCodigo(), etapa: 'Pendiente de pago', historial: [{ fecha: ahora, hecho: `Venta creada y asignada a ${asesora}` }],
   };
-  await env.DB.prepare('INSERT INTO demo_ventas (id, creada, actualizada, cliente, telefono, servicio, valor, asesora, estado_pago, estado_registro, pago, registro, historial, codigo) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    .bind(venta.id, venta.creada, venta.actualizada, venta.cliente, venta.telefono, venta.servicio, venta.valor, venta.asesora, venta.estado_pago, venta.estado_registro, null, null, JSON.stringify(venta.historial), venta.codigo)
+  await env.DB.prepare('INSERT INTO demo_ventas (id, creada, actualizada, cliente, telefono, servicio, valor, asesora, estado_pago, estado_registro, pago, registro, historial, codigo, moneda, tasa) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(venta.id, venta.creada, venta.actualizada, venta.cliente, venta.telefono, venta.servicio, venta.valor, venta.asesora, venta.estado_pago, venta.estado_registro, null, null, JSON.stringify(venta.historial), venta.codigo, venta.moneda, venta.tasa)
     .run();
   return { ...venta, enlace: ENLACE_FORMULARIO + venta.codigo };
 }
@@ -201,14 +232,15 @@ async function crearVenta(env, datos, ahora) {
 async function guardarPago(env, venta, datos, ahora) {
   if (venta.estado_pago === PAGO.CONFIRMADO) throw new ErrorDeUso('El pago de esta venta ya fue confirmado por Contabilidad');
   const valorPagado = leerValor(datos.valor);
-  const comparacion = compararPago(venta.valor, valorPagado);
+  const comparacion = compararConMoneda(venta, valorPagado, datos.moneda);
   const pago = {
-    fecha: texto(datos.fecha), valor: valorPagado, moneda: texto(datos.moneda) || 'COP', medio: texto(datos.medio), referencia: texto(datos.referencia),
+    fecha: texto(datos.fecha), valor: valorPagado, moneda: comparacion.moneda, medio: texto(datos.medio), referencia: texto(datos.referencia),
     pagador: texto(datos.pagador), destino: texto(datos.destino), observaciones: texto(datos.observaciones), archivo: texto(datos.archivo_url),
-    valor_esperado: venta.valor, comparacion: comparacion.resultado, diferencia: comparacion.diferencia, recibido: ahora,
+    valor_esperado: comparacion.esperado, moneda_venta: venta.moneda || 'COP', valor_venta: venta.valor, tasa: comparacion.convertido ? venta.tasa : null,
+    comparacion: comparacion.resultado, diferencia: comparacion.diferencia, recibido: ahora,
   };
   const nueva = await guardar(env, venta, { pago, estado_pago: PAGO.POR_CONFIRMAR }, ahora, `Soporte de pago recibido: ${comparacion.resultado}`);
-  return { venta: nueva, comparacion: comparacion.resultado, diferencia: comparacion.diferencia, valor_esperado: venta.valor };
+  return { venta: nueva, comparacion: comparacion.resultado, diferencia: comparacion.diferencia, valor_esperado: comparacion.esperado, moneda: comparacion.moneda };
 }
 
 async function guardarRegistro(env, venta, datos, ahora) {
@@ -292,7 +324,7 @@ async function cambiarEtapa(env, datos, ahora) {
 /** Lo que el agente puede saber de una venta: nada de datos de otros clientes. */
 function paraElAgente(venta) {
   if (!venta) return { encontrada: false };
-  return { encontrada: true, etapa: venta.etapa, enlace_formulario: venta.enlace, servicio: venta.servicio, valor_esperado: venta.valor, asesora: venta.asesora, estado_pago: venta.estado_pago, estado_registro: venta.estado_registro };
+  return { encontrada: true, etapa: venta.etapa, enlace_formulario: venta.enlace, servicio: venta.servicio, valor_esperado: venta.valor, moneda: venta.moneda || 'COP', asesora: venta.asesora, estado_pago: venta.estado_pago, estado_registro: venta.estado_registro };
 }
 
 async function comoHerramienta(env, cuerpo, ahora) {
@@ -301,8 +333,8 @@ async function comoHerramienta(env, cuerpo, ahora) {
   if (entrada.accion === 'consultar_venta') return paraElAgente(venta);
   if (!venta) return { ok: false, error: 'Este numero no tiene una venta registrada en el sistema' };
   if (entrada.accion === 'guardar_pago') {
-    const { comparacion, diferencia, valor_esperado } = await guardarPago(env, venta, entrada, ahora);
-    return { ok: true, comparacion, diferencia, valor_esperado, vars: { pago_comparacion: comparacion } };
+    const { comparacion, diferencia, valor_esperado, moneda } = await guardarPago(env, venta, entrada, ahora);
+    return { ok: true, comparacion, diferencia, valor_esperado, moneda, vars: { pago_comparacion: comparacion } };
   }
   if (entrada.accion === 'guardar_registro') {
     const { estado, faltantes } = await guardarRegistro(env, venta, entrada, ahora);
@@ -346,6 +378,8 @@ async function handler(request, env) {
     // Las tablas creadas antes de que existieran las etapas no tienen la columna; si ya esta, la orden falla y se ignora.
     await env.DB.prepare('ALTER TABLE demo_ventas ADD COLUMN etapa_manual TEXT').run().catch(() => undefined);
     await env.DB.prepare('ALTER TABLE demo_ventas ADD COLUMN codigo TEXT').run().catch(() => undefined);
+    await env.DB.prepare('ALTER TABLE demo_ventas ADD COLUMN moneda TEXT').run().catch(() => undefined);
+    await env.DB.prepare('ALTER TABLE demo_ventas ADD COLUMN tasa REAL').run().catch(() => undefined);
     await env.DB.prepare('UPDATE demo_ventas SET codigo = lower(hex(randomblob(12))) WHERE codigo IS NULL').run();
     const esHerramienta = cuerpo.input && typeof cuerpo.input === 'object';
     if (esHerramienta && esPublica) throw new ErrorDeUso('Accion desconocida');

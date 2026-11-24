@@ -84,7 +84,7 @@ async function pedir(ruta, datos) {
 }
 const accion = (nombre, datos) => pedir('/api/accion', { accion: nombre, ...datos });
 
-const pesos = (valor) => valor === null || valor === undefined ? '—' : '$ ' + Number(valor).toLocaleString('es-CO');
+const pesos = (valor, moneda) => valor === null || valor === undefined ? '—' : (moneda === 'EUR' ? '€ ' : '$ ') + Number(valor).toLocaleString('es-CO') + (moneda === 'EUR' ? '' : ' COP');
 const fecha = (iso) => iso ? new Date(iso).toLocaleString('es-CO', { dateStyle: 'medium', timeStyle: 'short' }) : '—';
 function claseDeEtapa(etapa) {
   if (['Apostillado', 'Listo para radicar'].includes(etapa)) return 'ok';
@@ -187,7 +187,7 @@ function pintarFilas() {
     alKeydown: (e) => { if (e.key === 'Enter') { estado.abierta = v.id; pintar(); } } },
     h('td', null, h('div', null, v.cliente || 'Sin nombre todavía'), h('div', { clase: 'suave' }, '+' + v.telefono)),
     h('td', null, etiqueta(v.etapa, claseDeEtapa(v.etapa))),
-    h('td', { clase: 'ocultar-movil' }, v.servicio), h('td', null, pesos(v.valor)),
+    h('td', { clase: 'ocultar-movil' }, v.servicio), h('td', null, pesos(v.valor, v.moneda)),
     h('td', { clase: 'ocultar-movil' }, v.asesora), h('td', { clase: 'ocultar-movil suave' }, fecha(v.actualizada)))));
 }
 
@@ -214,14 +214,15 @@ function detalle(v) {
       h('h2', null, v.cliente || 'Sin nombre todavía'), etiqueta(v.etapa, claseDeEtapa(v.etapa))),
     h('div', { clase: 'dos' },
       h('div', { clase: 'tarjeta' }, h('h2', null, 'Venta'),
-        campos([['WhatsApp', '+' + v.telefono], ['Servicio', v.servicio], ['Valor', pesos(v.valor)], ['Asesora', v.asesora], ['Creada', fecha(v.creada)]]),
+        campos([['WhatsApp', '+' + v.telefono], ['Servicio', v.servicio], ['Valor', pesos(v.valor, v.moneda)], ['Tasa de cambio', v.tasa ? pesos(v.tasa) + ' por euro' : ''], ['Asesora', v.asesora], ['Creada', fecha(v.creada)]]),
         v.enlace && [h('label', null, 'Enlace del formulario para el cliente'),
           h('div', { clase: 'barra' }, h('input', { readonly: true, value: v.enlace, 'aria-label': 'Enlace del formulario', alFocus: (e) => e.target.select() }),
             h('button', { alClick: async (e) => { try { await navigator.clipboard.writeText(v.enlace); e.target.textContent = 'Copiado'; } catch { e.target.textContent = 'Cópialo a mano'; } } }, 'Copiar'))],
         h('label', null, 'Etapa del trámite' + (listo ? '' : ' (se habilita con pago confirmado y registro completo)')), selector),
       h('div', { clase: 'tarjeta' }, h('h2', null, 'Pago ', etiqueta(v.estado_pago, v.estado_pago === 'Confirmado' ? 'ok' : v.estado_pago === 'Rechazado' ? 'mal' : 'alerta')),
-        pago ? [campos([['Comparación', etiqueta(pago.comparacion, claseComparacion)], ['Valor del soporte', pesos(pago.valor)], ['Valor de la venta', pesos(pago.valor_esperado)],
-          ['Diferencia', pago.diferencia ? pesos(pago.diferencia) : ''], ['Fecha', pago.fecha], ['Medio', pago.medio], ['Referencia', pago.referencia],
+        pago ? [campos([['Comparación', etiqueta(pago.comparacion, claseComparacion)], ['Valor del soporte', pesos(pago.valor, pago.moneda)], ['Valor esperado', pesos(pago.valor_esperado, pago.moneda)],
+          ['Conversión', pago.tasa ? pesos(pago.valor_venta, pago.moneda_venta) + ' a ' + pesos(pago.tasa) + ' por euro' : ''],
+          ['Diferencia', pago.diferencia ? pesos(pago.diferencia, pago.moneda) : ''], ['Fecha', pago.fecha], ['Medio', pago.medio], ['Referencia', pago.referencia],
           ['Paga', pago.pagador], ['Recibe', pago.destino], ['Observaciones', pago.observaciones], ['Recibido', fecha(pago.recibido)]]),
           v.estado_pago !== 'Confirmado' && h('div', { clase: 'acciones' },
             h('button', { clase: 'bien', alClick: () => ejecutar('confirmar_pago', { id: v.id, confirmado: true }, error) }, 'Contabilidad: confirmar pago'),
@@ -258,12 +259,13 @@ function abrirNuevaVenta() {
   const error = h('p', { clase: 'error', role: 'alert' });
   const campo = (id, texto, atributos) => [h('label', { for: id }, texto), h('input', { id, ...atributos })];
   const asesora = h('select', { id: 'asesora' }, h('option', { value: '' }, 'Asignar por turno'), estado.asesoras.map((a) => h('option', { value: a }, a)));
+  const moneda = h('select', { id: 'moneda' }, h('option', { value: 'COP' }, 'Pesos colombianos (COP)'), h('option', { value: 'EUR' }, 'Euros (EUR)'));
   const dialogo = h('dialog', { clase: 'tarjeta' });
   const formulario = h('form', { alSubmit: async (evento) => {
     evento.preventDefault();
     const valor = (id) => formulario.querySelector('#' + id).value.trim();
     try {
-      await accion('crear_venta', { cliente: valor('cliente'), telefono: valor('telefono'), servicio: valor('servicio'), valor: valor('valor'), asesora: asesora.value });
+      await accion('crear_venta', { cliente: valor('cliente'), telefono: valor('telefono'), servicio: valor('servicio'), valor: valor('valor'), moneda: moneda.value, tasa: valor('tasa'), asesora: asesora.value });
       dialogo.close(); dialogo.remove(); await cargar();
     } catch (fallo) { error.textContent = fallo.message; }
   } },
@@ -271,7 +273,9 @@ function abrirNuevaVenta() {
     h('p', { clase: 'suave' }, 'El cliente debe escribir a la línea de WhatsApp desde este mismo número.'),
     campo('telefono', 'WhatsApp del cliente (con indicativo, ej. 573001234567)', { required: true, inputmode: 'tel' }),
     campo('servicio', 'Servicio', { required: true, value: 'Apostilla de título y notas' }),
-    campo('valor', 'Valor de la venta (pesos)', { required: true, inputmode: 'numeric', placeholder: '1.250.000' }),
+    h('label', { for: 'moneda' }, 'Moneda de la cotización'), moneda,
+    campo('valor', 'Valor de la venta', { required: true, inputmode: 'decimal', placeholder: '1.250.000 o 250' }),
+    campo('tasa', 'Tasa de cambio: pesos por euro (obligatoria si cotizas en euros)', { inputmode: 'numeric', placeholder: '4.500' }),
     campo('cliente', 'Nombre (opcional; se completa con los documentos)', {}),
     h('label', { for: 'asesora' }, 'Asesora'), asesora, error,
     h('div', { clase: 'acciones' }, h('button', { clase: 'primario', type: 'submit' }, 'Crear venta'),

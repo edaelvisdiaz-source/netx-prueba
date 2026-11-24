@@ -6,14 +6,14 @@ const { join } = require('node:path');
 
 // La funcion se despliega tal cual en Kapso (sin export), asi que aqui se carga como texto.
 const codigo = readFileSync(join(__dirname, 'index.js'), 'utf8');
-const { handler, leerValor, compararPago, mismoTelefono, estadoDelRegistro, elegirAsesora } = new Function(
-  `${codigo}; return { handler, leerValor, compararPago, mismoTelefono, estadoDelRegistro, elegirAsesora };`,
+const { handler, leerValor, compararPago, compararConMoneda, mismoTelefono, estadoDelRegistro, elegirAsesora } = new Function(
+  `${codigo}; return { handler, leerValor, compararPago, compararConMoneda, mismoTelefono, estadoDelRegistro, elegirAsesora };`,
 )();
 
 /** Base de datos y almacen en memoria con la misma forma que usa la funcion. */
 function entornoDePrueba(secretos = {}) {
   const filas = new Map();
-  const columnas = ['id', 'creada', 'actualizada', 'cliente', 'telefono', 'servicio', 'valor', 'asesora', 'estado_pago', 'estado_registro', 'pago', 'registro', 'historial', 'codigo'];
+  const columnas = ['id', 'creada', 'actualizada', 'cliente', 'telefono', 'servicio', 'valor', 'asesora', 'estado_pago', 'estado_registro', 'pago', 'registro', 'historial', 'codigo', 'moneda', 'tasa'];
   const sentencia = (sql, valores = []) => ({
     bind: (...nuevos) => sentencia(sql, nuevos),
     run: async () => {
@@ -215,4 +215,35 @@ test('la lectura automatica completa los datos sin borrar el correo ni los archi
   const fallida = await llamar(env, { accion: 'guardar_lectura', id: venta.id, lectura: { estado: 'fallida', observaciones: 'muy pesado' } });
   assert.equal(fallida.venta.registro.lectura.estado, 'fallida');
   assert.equal(fallida.venta.registro.nombre, 'David Andres Lasso Garcia');
+});
+
+test('compara pagos hechos en la otra moneda usando la tasa de la venta', () => {
+  const enEuros = { valor: 250, moneda: 'EUR', tasa: 4500 };
+  assert.equal(compararConMoneda(enEuros, 250, 'EUR').resultado, 'coincide');
+  assert.equal(compararConMoneda(enEuros, 250, '€').resultado, 'coincide');
+  const enPesos = compararConMoneda(enEuros, 1140000, 'COP');
+  assert.equal(enPesos.resultado, 'coincide');
+  assert.equal(enPesos.esperado, 1125000);
+  assert.equal(compararConMoneda(enEuros, 900000, 'pesos').resultado, 'pago menor');
+  assert.equal(compararConMoneda(enEuros, 1300000, 'COP').resultado, 'pago mayor');
+  assert.equal(compararConMoneda({ valor: 1125000, moneda: 'COP', tasa: 4500 }, 250, 'EUR').resultado, 'coincide');
+  assert.equal(compararConMoneda({ valor: 1125000, moneda: 'COP', tasa: null }, 250, 'EUR').resultado, 'moneda distinta');
+  assert.equal(compararConMoneda(enEuros, 300, 'USD').resultado, 'moneda distinta');
+  assert.equal(compararConMoneda({ valor: 350000 }, 350000, '').resultado, 'coincide');
+});
+
+test('una venta en euros exige la tasa y guarda el pago con su conversion', async () => {
+  const env = entornoDePrueba();
+  assert.equal((await llamar(env, { ...VENTA, valor: '250', moneda: 'EUR' })).ok, false);
+  assert.equal((await llamar(env, { ...VENTA, valor: '250', moneda: 'USD', tasa: '4000' })).ok, false);
+  const { venta } = await llamar(env, { ...VENTA, valor: '250', moneda: 'EUR', tasa: '4.500' });
+  assert.equal(venta.moneda, 'EUR');
+  assert.equal(venta.tasa, 4500);
+  assert.equal((await llamar(env, desdeElChat('573001234567', { accion: 'consultar_venta' }))).moneda, 'EUR');
+  const pago = await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '$ 1.125.000', moneda: 'COP' }));
+  assert.equal(pago.comparacion, 'coincide');
+  const guardada = (await llamar(env, { accion: 'ver', id: venta.id })).venta.pago;
+  assert.equal(guardada.valor_esperado, 1125000);
+  assert.equal(guardada.moneda_venta, 'EUR');
+  assert.equal(guardada.tasa, 4500);
 });
