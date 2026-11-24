@@ -203,7 +203,8 @@ export async function atender(evento, env, ahora = Date.now(), almacen = null, d
   if (!datos) return responder(400, { ok: false, error: 'Solicitud no válida' });
   if (ruta === '/api/entrar') return entrar(datos, env, ahora);
   // El formulario es publico: lo protege el codigo del enlace, que solo conoce el cliente.
-  if (ruta === '/api/formulario/ver') return conSistema(async () => { const v = await sistema({ accion: 'formulario_ver', codigo: datos.codigo }, env); return responder(200, v.ok ? { ok: true, servicio: v.servicio, enviado: v.enviado } : v); });
+  if (ruta === '/api/formulario/ver') return conSistema(async () => { const v = await sistema({ accion: 'formulario_ver', codigo: datos.codigo }, env); return responder(200, v.ok ? { ok: true, servicio: v.servicio, enviado: v.enviado, resumen: v.resumen } : v); });
+  if (ruta === '/api/formulario/aceptar') return conSistema(async () => responder(200, await sistema({ accion: 'formulario_aceptar', codigo: datos.codigo, acepta: datos.acepta === true, correo: datos.correo }, env)));
   if (ruta === '/api/formulario/subir') return conSistema(() => prepararSubida(datos, env, almacen));
   if (ruta === '/api/formulario/enviar') return conSistema(() => enviarFormulario(datos, env, almacen, despachar));
   if (!sesionValida(leerCookie(evento), env.SECRETO_SESION, ahora)) return responder(401, { ok: false, error: 'Sesión vencida' });

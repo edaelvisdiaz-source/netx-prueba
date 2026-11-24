@@ -6,7 +6,7 @@ export const FORMULARIO = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex">
-<title>Registro de documentos · Apostillas y Legalizaciones</title>
+<title>Autorización de datos · Apostillas y Legalizaciones</title>
 <style nonce="__NONCE__">
 :root{--texto:#1c2430;--suave:#5b6675;--borde:#dfe3e8;--marca:#1f5fbf;--ok:#1a7f4b;--mal:#b3261e}
 *{box-sizing:border-box}
@@ -36,7 +36,7 @@ button:disabled{opacity:.55;cursor:default}
 </style>
 </head>
 <body>
-<header><h1>Apostillas y Legalizaciones</h1><p>Registro de documentos</p></header>
+<header><h1>Apostillas y Legalizaciones</h1><p>Confirmación de datos y autorización</p></header>
 <main id="raiz"><div class="tarjeta"><p>Cargando…</p></div></main>
 <script nonce="__NONCE__">
 'use strict';
@@ -96,33 +96,37 @@ function campoArchivo([clave, titulo, ayuda], alCambiar) {
   return caja;
 }
 
-function pintarFormulario(servicio) {
-  const correo = h('input', { type: 'email', id: 'correo', required: true, autocomplete: 'email', placeholder: 'ejemplo@correo.com' });
+const dinero = (valor, moneda) => (moneda === 'EUR' ? '€ ' : '$ ') + Number(valor).toLocaleString('es-CO') + (moneda === 'EUR' ? '' : ' COP');
+
+function pintarAutorizacion(resumen) {
+  const fila = (nombre, valor) => valor ? h('p', { clase: 'ayuda' }, h('strong', null, nombre + ': '), valor) : null;
+  const correo = h('input', { type: 'email', id: 'correo', autocomplete: 'email', placeholder: 'ejemplo@correo.com', value: resumen.correo || '' });
   const acepta = h('input', { type: 'checkbox', id: 'acepta' });
   const error = h('p', { clase: 'error', role: 'alert' });
-  const boton = h('button', { type: 'submit', disabled: true }, 'Enviar documentos');
-  const revisar = () => { boton.disabled = !(DOCUMENTOS.every(([clave]) => subidos[clave]) && acepta.checked && correo.validity.valid && correo.value); };
-  correo.addEventListener('input', revisar); acepta.addEventListener('change', revisar);
+  const boton = h('button', { type: 'submit', disabled: true }, 'Confirmar y autorizar');
+  acepta.addEventListener('change', () => { boton.disabled = !acepta.checked; });
   raiz.replaceChildren(h('form', { clase: 'tarjeta', novalidate: true, alSubmit: async (evento) => {
     evento.preventDefault();
     boton.disabled = true; boton.textContent = 'Enviando…'; error.textContent = '';
     try {
-      await pedir('/api/formulario/enviar', { correo: correo.value.trim(), acepta: acepta.checked, archivos: subidos });
-      mensaje('¡Listo! Recibimos tus documentos', 'Tu asesora los revisará y te escribirá por WhatsApp. Ya puedes cerrar esta página.', true);
-    } catch (fallo) { error.textContent = fallo.message; boton.textContent = 'Enviar documentos'; revisar(); }
+      await pedir('/api/formulario/aceptar', { acepta: acepta.checked, correo: correo.value.trim() });
+      mensaje('¡Listo! Gracias por confirmar', 'Tu autorización quedó registrada. Tu asesora continúa con tu trámite y te escribirá por WhatsApp.', true);
+    } catch (fallo) { error.textContent = fallo.message; boton.textContent = 'Confirmar y autorizar'; boton.disabled = !acepta.checked; }
   } },
-    h('h2', null, servicio),
-    h('p', { clase: 'ayuda' }, 'Solo necesitamos tu correo y tres documentos. Tu nombre, cédula, universidad y título los tomamos de los documentos, así que no tienes que escribirlos.'),
+    h('h2', null, 'Confirma tus datos'),
+    h('p', { clase: 'ayuda' }, 'Esto es lo que tenemos registrado de tu trámite. Si algo no coincide, escríbele a tu asesora por WhatsApp antes de confirmar.'),
+    fila('Nombre', resumen.nombre), fila('Identificación', resumen.identificacion), fila('Universidad', resumen.universidad), fila('Título', resumen.titulo),
+    fila('Servicio', resumen.servicio), resumen.valor > 0 && fila('Valor', dinero(resumen.valor, resumen.moneda)),
+    fila('Documentos recibidos', (resumen.documentos || []).join(', ')),
     h('label', { for: 'correo' }, 'Correo electrónico'), correo,
-    DOCUMENTOS.map((documento) => campoArchivo(documento, revisar)),
-    h('label', { clase: 'acepto', for: 'acepta' }, acepta, h('span', null, 'Acepto los términos y condiciones y la política de privacidad, y autorizo el tratamiento de mis datos y documentos para realizar el trámite, incluida su lectura automática.')),
+    h('label', { clase: 'acepto', for: 'acepta' }, acepta, h('span', null, resumen.texto)),
     boton, error));
 }
 
 pedir('/api/formulario/ver')
-  .then(({ servicio, enviado }) => enviado
-    ? mensaje('Ya recibimos tus documentos', 'Si necesitas cambiar alguno, escríbele a tu asesora por WhatsApp.', true)
-    : pintarFormulario(servicio))
+  .then(({ resumen }) => resumen.autorizado
+    ? mensaje('Ya registramos tu autorización', 'No tienes que hacer nada más aquí. Si necesitas algo, escríbele a tu asesora por WhatsApp.', true)
+    : pintarAutorizacion(resumen))
   .catch((error) => mensaje('No pudimos abrir tu registro', error.message === 'Este enlace no es valido' ? 'El enlace no es válido. Pídele a tu asesora que te lo envíe de nuevo.' : error.message, false));
 </script>
 </body>

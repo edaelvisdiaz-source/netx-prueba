@@ -226,7 +226,7 @@ function detalle(v) {
       h('div', { clase: 'tarjeta' }, h('h2', null, 'Venta'),
         campos([['WhatsApp', '+' + v.telefono], ['Servicio', v.servicio], ['Valor', v.valor > 0 ? pesos(v.valor, v.moneda) : 'Sin cotizar'], ['Tasa de cambio', v.tasa ? pesos(v.tasa) + ' por euro' : ''], ['Asesora', v.asesora], ['Creada', fecha(v.creada)]]),
         v.estado_pago === 'Sin soporte' && h('div', { clase: 'acciones' }, h('button', { clase: v.valor > 0 ? '' : 'primario', alClick: () => abrirNuevaVenta(v) }, v.valor > 0 ? 'Cambiar cotización' : 'Cotizar')),
-        v.enlace && [h('label', null, 'Formulario web (opcional; los documentos llegan por el chat)'),
+        v.enlace && [h('label', null, 'Enlace de autorización de datos para el cliente'),
           h('div', { clase: 'barra' }, h('input', { readonly: true, value: v.enlace, 'aria-label': 'Enlace del formulario', alFocus: (e) => e.target.select() }),
             h('button', { alClick: async (e) => { try { await navigator.clipboard.writeText(v.enlace); e.target.textContent = 'Copiado'; } catch { e.target.textContent = 'Cópialo a mano'; } } }, 'Copiar'))],
         h('label', null, 'Etapa del trámite' + (listo ? '' : ' (se habilita con pago confirmado y registro completo)')), selector),
@@ -253,6 +253,7 @@ function detalle(v) {
           ['Legibilidad', registro.legibilidad], ['Diferencias', registro.diferencias],
           ['Lectura automática', registro.lectura && etiqueta(registro.lectura.estado === 'hecha' ? 'Leído con IA' : registro.lectura.estado === 'pendiente' ? 'Leyendo…' : 'Revisar a mano', registro.lectura.estado === 'hecha' ? 'ok' : 'alerta')],
           ['Observaciones de la lectura', registro.lectura && registro.lectura.observaciones],
+          ['Autorización de datos', etiqueta(registro.autorizacion ? 'Aceptada el ' + fecha(registro.autorizacion.fecha) : 'Pendiente', registro.autorizacion ? 'ok' : 'alerta')],
           ['Documentos del chat', registro.archivos_chat && Object.keys(registro.archivos_chat).length > 0 && h('span', null, Object.entries(registro.archivos_chat).map(([documento, direccion]) =>
             String(direccion).startsWith('https://') && h('a', { href: direccion, target: '_blank', rel: 'noopener noreferrer' }, 'Ver ' + documento + '  '))) ],
           ['Archivos del formulario', registro.archivos_formulario && h('span', null, Object.keys(registro.archivos_formulario).map((documento) =>

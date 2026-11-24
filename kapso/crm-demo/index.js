@@ -351,10 +351,37 @@ async function guardarLectura(env, datos, ahora) {
   return { ok: true, venta: (await cerrarRegistro(env, venta, registro, ahora, 'leído con IA')).venta };
 }
 
-/** Lo minimo que ve quien abre el enlace: nada de valores, telefonos ni datos ya registrados. */
+const TEXTO_DE_AUTORIZACION = 'Autorizo a Apostillas y Legalizaciones S.A.S. el tratamiento de mis datos personales y documentos para realizar el tramite contratado, incluida su lectura automatica, y acepto los terminos y condiciones del servicio.';
+
+function ocultar(valor) {
+  const limpio = texto(valor);
+  return limpio.length > 4 ? `${'•'.repeat(limpio.length - 4)}${limpio.slice(-4)}` : limpio;
+}
+
+/** Lo que ve quien abre el enlace: el resumen de su propio tramite, con la identificacion a medias. */
 async function verFormulario(env, datos) {
   const venta = await porCodigo(env, datos.codigo);
-  return { ok: true, id: venta.id, servicio: venta.servicio, enviado: Boolean(venta.registro?.archivos_formulario) };
+  const registro = venta.registro || {};
+  return {
+    ok: true, id: venta.id, servicio: venta.servicio, enviado: Boolean(registro.archivos_formulario),
+    resumen: {
+      nombre: registro.nombre || venta.cliente || '', identificacion: ocultar(registro.cedula), correo: registro.correo || '', universidad: registro.universidad || '',
+      titulo: registro.titulo || '', servicio: venta.servicio, valor: venta.valor, moneda: venta.moneda || 'COP',
+      documentos: registro.documentos_recibidos || [], autorizado: registro.autorizacion?.fecha || null, texto: TEXTO_DE_AUTORIZACION,
+    },
+  };
+}
+
+/** El cliente acepta el tratamiento de datos y los terminos: queda la fecha y el texto exacto que acepto. */
+async function aceptarAutorizacion(env, datos, ahora) {
+  const venta = await porCodigo(env, datos.codigo);
+  if (datos.acepta !== true) throw new ErrorDeUso('Debes marcar la casilla para continuar');
+  const correo = texto(datos.correo).toLowerCase();
+  if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) throw new ErrorDeUso('Escribe un correo valido');
+  if (venta.registro?.autorizacion) return { ok: true, fecha: venta.registro.autorizacion.fecha };
+  const registro = unirRegistro(venta.registro, { correo, autorizacion: { fecha: ahora, texto: TEXTO_DE_AUTORIZACION } });
+  await guardar(env, venta, { registro }, ahora, 'El cliente autorizó el tratamiento de datos y aceptó los términos');
+  return { ok: true, fecha: ahora };
 }
 
 async function enviarFormulario(env, datos, ahora) {
@@ -420,7 +447,8 @@ async function comoHerramienta(env, cuerpo, ahora) {
   if (entrada.accion === 'guardar_pago') {
     if (!(venta.valor > 0)) return { ok: false, error: 'Este cliente aun no tiene cotizacion: la asesora debe ponerle el valor antes de registrar el pago' };
     const { comparacion, diferencia, valor_esperado, moneda, saldo, moneda_venta } = await guardarPago(env, venta, entrada, ahora);
-    return { ok: true, comparacion, diferencia, valor_esperado, moneda, saldo_pendiente: saldo, moneda_del_saldo: moneda_venta, vars: { pago_comparacion: comparacion } };
+    return { ok: true, comparacion, diferencia, valor_esperado, moneda, saldo_pendiente: saldo, moneda_del_saldo: moneda_venta,
+      enlace_autorizacion: venta.registro?.autorizacion ? null : venta.enlace, vars: { pago_comparacion: comparacion } };
   }
   if (entrada.accion === 'guardar_registro') {
     const { estado, faltantes } = await guardarRegistro(env, venta, entrada, ahora);
@@ -441,6 +469,7 @@ async function comoPanel(env, cuerpo, ahora) {
       return { ok: true, venta: nueva };
     }
     case 'guardar_lectura': return guardarLectura(env, cuerpo, ahora);
+    case 'formulario_aceptar': return aceptarAutorizacion(env, cuerpo, ahora);
     case 'formulario_enviar': return enviarFormulario(env, cuerpo, ahora);
     case 'cotizar': return { ok: true, venta: await cotizar(env, await porId(env, cuerpo.id), cuerpo, ahora, 'la asesora') };
     case 'cambiar_etapa': return { ok: true, venta: await cambiarEtapa(env, cuerpo, ahora) };

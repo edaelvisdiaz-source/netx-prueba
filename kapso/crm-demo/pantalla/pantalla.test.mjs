@@ -129,6 +129,10 @@ test('el formulario no revela el identificador ni datos de la venta', async (t) 
   sistemaDePrueba(t, { formulario_ver: { ok: true, id: 'venta-1', servicio: 'Apostilla', enviado: false } });
   const respuesta = await atender(evento('/api/formulario/ver', { codigo: CODIGO }), ENV, AHORA);
   assert.deepEqual(JSON.parse(respuesta.body), { ok: true, servicio: 'Apostilla', enviado: false });
+  const llamadas = sistemaDePrueba(t, { formulario_aceptar: { ok: true, fecha: 'hoy' } });
+  const aceptar = await atender(evento('/api/formulario/aceptar', { codigo: CODIGO, acepta: 'si', id: 'otra' }), ENV, AHORA);
+  assert.equal(JSON.parse(aceptar.body).ok, true);
+  assert.deepEqual(llamadas[0], { accion: 'formulario_aceptar', codigo: CODIGO, acepta: false });
 });
 
 test('solo autoriza subir documentos validos y a la carpeta de esa venta', async (t) => {

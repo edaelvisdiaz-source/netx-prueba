@@ -175,7 +175,8 @@ test('el formulario web registra correo y documentos sin exponer datos de la ven
   assert.match(venta.enlace, /\/f\/[0-9a-f]{24}$/);
   const codigo = venta.enlace.split('/f/')[1];
   const vista = await llamar(env, { accion: 'formulario_ver', codigo });
-  assert.deepEqual(Object.keys(vista).sort(), ['enviado', 'estado', 'id', 'ok', 'servicio']);
+  assert.deepEqual(Object.keys(vista).sort(), ['enviado', 'estado', 'id', 'ok', 'resumen', 'servicio']);
+  assert.equal(JSON.stringify(vista).includes('3001234567'), false);
   assert.equal((await llamar(env, { accion: 'formulario_ver', codigo: 'a'.repeat(24) })).ok, false);
 
   const archivos = { titulo: `ventas/${venta.id}/titulo-1.pdf`, notas: `ventas/${venta.id}/notas-1.pdf`, cedula: `ventas/${venta.id}/cedula-1.pdf` };
@@ -333,4 +334,27 @@ test('la asesora puede corregir los datos y registrar un pago a mano', async () 
   assert.equal(pagada.venta.pago.saldo, 1000000);
   assert.equal(pagada.venta.pago.pagos[0].observaciones, 'Registrado a mano en la plataforma');
   assert.equal((await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true })).venta.estado_pago, 'Confirmado');
+});
+
+test('el cliente autoriza el tratamiento de datos sobre el resumen de su tramite', async () => {
+  const env = entornoDePrueba();
+  const { venta } = await llamar(env, { ...VENTA, valor: '150', moneda: 'EUR', tasa: '4500' });
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_registro', nombre: 'Bertha Rivera', cedula: '52963649', correo: 'b@x.co', documentos_recibidos: 'titulo, notas, cedula' }));
+  const pago = await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '150', moneda: 'EUR' }));
+  assert.match(pago.enlace_autorizacion, /\/f\//);
+  const codigo = venta.enlace.split('/f/')[1];
+  const { resumen } = await llamar(env, { accion: 'formulario_ver', codigo });
+  assert.equal(resumen.nombre, 'Bertha Rivera');
+  assert.equal(resumen.identificacion, '••••3649');
+  assert.equal(resumen.valor, 150);
+  assert.equal(resumen.autorizado, null);
+  assert.equal((await llamar(env, { accion: 'formulario_aceptar', codigo, acepta: false })).ok, false);
+  const aceptada = await llamar(env, { accion: 'formulario_aceptar', codigo, acepta: true });
+  assert.equal(aceptada.ok, true);
+  const final = (await llamar(env, { accion: 'ver', id: venta.id })).venta;
+  assert.equal(final.registro.autorizacion.fecha, aceptada.fecha);
+  assert.match(final.registro.autorizacion.texto, /tratamiento de mis datos/);
+  assert.equal(final.registro.nombre, 'Bertha Rivera');
+  assert.equal((await llamar(env, { accion: 'formulario_aceptar', codigo, acepta: true })).fecha, aceptada.fecha);
+  assert.equal((await llamar(env, desdeElChat('573001234567', { accion: 'consultar_venta' }))).enlace_autorizacion, undefined);
 });
