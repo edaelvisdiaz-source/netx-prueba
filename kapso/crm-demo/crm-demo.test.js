@@ -299,7 +299,6 @@ test('el cliente puede pagar por abonos y el saldo se va descontando', async () 
   const abono = await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '75', moneda: 'EUR', archivo_url: 'https://archivos.invalid/soporte1.jpg' }));
   assert.equal(abono.comparacion, 'pago menor');
   assert.equal(abono.saldo_pendiente, 75);
-  assert.match(abono.enlace_formulario, /\/f\//);
   await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true });
   await llamar(env, desdeElChat('573001234567', { accion: 'guardar_registro', documentos_recibidos: 'titulo, notas, cedula', correo: 'a@b.co' }));
   assert.equal((await llamar(env, { accion: 'ver', id: venta.id })).venta.etapa, 'Saldo pendiente');
@@ -312,4 +311,26 @@ test('el cliente puede pagar por abonos y el saldo se va descontando', async () 
   assert.equal(final.estado_pago, 'Por confirmar');
   await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true });
   assert.equal((await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '10', moneda: 'EUR' }))).ok, false);
+});
+
+test('los documentos del chat quedan adjuntos al cliente sin que el use el formulario', async () => {
+  const env = entornoDePrueba();
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_registro', documentos_recibidos: 'titulo', archivo_titulo: 'https://archivos.invalid/t.pdf', archivo_notas: 'javascript:alert(1)' }));
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_registro', documentos_recibidos: 'cedula', archivo_cedula: 'https://archivos.invalid/c.jpg' }));
+  const { ventas } = await llamar(env, { accion: 'listar' });
+  assert.deepEqual(ventas[0].registro.archivos_chat, { titulo: 'https://archivos.invalid/t.pdf', cedula: 'https://archivos.invalid/c.jpg' });
+});
+
+test('la asesora puede corregir los datos y registrar un pago a mano', async () => {
+  const env = entornoDePrueba();
+  const { venta } = await llamar(env, VENTA);
+  const corregida = await llamar(env, { accion: 'editar_registro', id: venta.id, nombre: 'Bertha Rivera', cedula: '52.963.649', correo: 'b@x.co', documentos_recibidos: 'titulo, notas, cedula' });
+  assert.equal(corregida.venta.cliente, 'Bertha Rivera');
+  assert.equal(corregida.venta.registro.cedula, '52963649');
+  assert.equal(corregida.venta.estado_registro, 'Completo');
+  assert.equal((await llamar(env, { accion: 'editar_registro', id: venta.id, correo: 'malo' })).ok, false);
+  const pagada = await llamar(env, { accion: 'registrar_pago', id: venta.id, valor: '250.000', moneda: 'COP', medio: 'Efectivo' });
+  assert.equal(pagada.venta.pago.saldo, 1000000);
+  assert.equal(pagada.venta.pago.pagos[0].observaciones, 'Registrado a mano en la plataforma');
+  assert.equal((await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true })).venta.estado_pago, 'Confirmado');
 });

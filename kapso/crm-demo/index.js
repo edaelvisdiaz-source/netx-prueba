@@ -290,6 +290,29 @@ async function guardarPago(env, venta, datos, ahora) {
   return { venta: nueva, comparacion, diferencia: pago.diferencia, valor_esperado: directa.esperado, moneda, saldo, moneda_venta: venta.moneda || 'COP' };
 }
 
+/** Direcciones de los documentos que el cliente envio por el chat, una por tipo de documento. */
+function archivosDelChat(anteriores, datos) {
+  const archivos = { ...(anteriores || {}) };
+  for (const documento of DOCUMENTOS_OBLIGATORIOS) {
+    const direccion = texto(datos[`archivo_${documento}`]);
+    if (direccion.startsWith('https://')) archivos[documento] = direccion;
+  }
+  return archivos;
+}
+
+/** Correcciones que la asesora hace a mano sobre los datos leidos por la IA. */
+async function editarRegistro(env, datos, ahora) {
+  const venta = await porId(env, datos.id);
+  const correo = texto(datos.correo).toLowerCase();
+  if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) throw new ErrorDeUso('El correo no tiene un formato valido');
+  const registro = unirRegistro(venta.registro, {
+    nombre: texto(datos.nombre), cedula: texto(datos.cedula).replace(/[.\s]/g, ''), fecha_nacimiento: texto(datos.fecha_nacimiento),
+    universidad: texto(datos.universidad), titulo: texto(datos.titulo), fecha_grado: texto(datos.fecha_grado), correo,
+    documentos_recibidos: lista(datos.documentos_recibidos), recibido: venta.registro?.recibido || ahora,
+  });
+  return { ok: true, venta: (await cerrarRegistro(env, venta, registro, ahora, 'corregido a mano')).venta };
+}
+
 async function guardarRegistro(env, venta, datos, ahora) {
   const correo = texto(datos.correo).toLowerCase();
   if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) throw new ErrorDeUso('El correo no tiene un formato valido');
@@ -297,7 +320,7 @@ async function guardarRegistro(env, venta, datos, ahora) {
     nombre: texto(datos.nombre), cedula: soloDigitos(datos.cedula), fecha_nacimiento: texto(datos.fecha_nacimiento), universidad: texto(datos.universidad),
     titulo: texto(datos.titulo), fecha_grado: texto(datos.fecha_grado), codigo_verificacion: texto(datos.codigo_verificacion), correo,
     documentos_recibidos: lista(datos.documentos_recibidos), legibilidad: texto(datos.legibilidad), diferencias: texto(datos.diferencias),
-    archivos: lista(datos.archivos), recibido: ahora,
+    archivos_chat: archivosDelChat(venta.registro?.archivos_chat, datos), recibido: ahora,
   });
   return cerrarRegistro(env, venta, registro, ahora, 'por WhatsApp');
 }
@@ -397,7 +420,7 @@ async function comoHerramienta(env, cuerpo, ahora) {
   if (entrada.accion === 'guardar_pago') {
     if (!(venta.valor > 0)) return { ok: false, error: 'Este cliente aun no tiene cotizacion: la asesora debe ponerle el valor antes de registrar el pago' };
     const { comparacion, diferencia, valor_esperado, moneda, saldo, moneda_venta } = await guardarPago(env, venta, entrada, ahora);
-    return { ok: true, comparacion, diferencia, valor_esperado, moneda, saldo_pendiente: saldo, moneda_del_saldo: moneda_venta, enlace_formulario: venta.enlace, vars: { pago_comparacion: comparacion } };
+    return { ok: true, comparacion, diferencia, valor_esperado, moneda, saldo_pendiente: saldo, moneda_del_saldo: moneda_venta, vars: { pago_comparacion: comparacion } };
   }
   if (entrada.accion === 'guardar_registro') {
     const { estado, faltantes } = await guardarRegistro(env, venta, entrada, ahora);
@@ -410,6 +433,13 @@ async function comoPanel(env, cuerpo, ahora) {
   switch (cuerpo.accion) {
     case 'listar': return { ok: true, ventas: await todas(env), asesoras: [...TITULARES, REEMPLAZO], etapas: ETAPAS_MANUALES };
     case 'formulario_ver': return verFormulario(env, cuerpo);
+    case 'editar_registro': return editarRegistro(env, cuerpo, ahora);
+    case 'registrar_pago': {
+      const venta = await porId(env, cuerpo.id);
+      if (!(venta.valor > 0)) throw new ErrorDeUso('Primero hay que cotizar');
+      const { venta: nueva } = await guardarPago(env, venta, { ...cuerpo, observaciones: texto(cuerpo.observaciones) || 'Registrado a mano en la plataforma' }, ahora);
+      return { ok: true, venta: nueva };
+    }
     case 'guardar_lectura': return guardarLectura(env, cuerpo, ahora);
     case 'formulario_enviar': return enviarFormulario(env, cuerpo, ahora);
     case 'cotizar': return { ok: true, venta: await cotizar(env, await porId(env, cuerpo.id), cuerpo, ahora, 'la asesora') };

@@ -80,7 +80,7 @@ function h(etiqueta, atributos, ...hijos) {
     else if (clave.startsWith('al')) nodo.addEventListener(clave.slice(2).toLowerCase(), valor);
     else if (valor !== false && valor !== null && valor !== undefined) nodo.setAttribute(clave, valor === true ? '' : valor);
   }
-  for (const hijo of hijos.flat()) if (hijo !== null && hijo !== undefined && hijo !== false) nodo.append(hijo.nodeType ? hijo : document.createTextNode(String(hijo)));
+  for (const hijo of hijos.flat(Infinity)) if (hijo !== null && hijo !== undefined && hijo !== false) nodo.append(hijo.nodeType ? hijo : document.createTextNode(String(hijo)));
   return nodo;
 }
 
@@ -226,7 +226,7 @@ function detalle(v) {
       h('div', { clase: 'tarjeta' }, h('h2', null, 'Venta'),
         campos([['WhatsApp', '+' + v.telefono], ['Servicio', v.servicio], ['Valor', v.valor > 0 ? pesos(v.valor, v.moneda) : 'Sin cotizar'], ['Tasa de cambio', v.tasa ? pesos(v.tasa) + ' por euro' : ''], ['Asesora', v.asesora], ['Creada', fecha(v.creada)]]),
         v.estado_pago === 'Sin soporte' && h('div', { clase: 'acciones' }, h('button', { clase: v.valor > 0 ? '' : 'primario', alClick: () => abrirNuevaVenta(v) }, v.valor > 0 ? 'Cambiar cotización' : 'Cotizar')),
-        v.enlace && [h('label', null, 'Enlace del formulario para el cliente'),
+        v.enlace && [h('label', null, 'Formulario web (opcional; los documentos llegan por el chat)'),
           h('div', { clase: 'barra' }, h('input', { readonly: true, value: v.enlace, 'aria-label': 'Enlace del formulario', alFocus: (e) => e.target.select() }),
             h('button', { alClick: async (e) => { try { await navigator.clipboard.writeText(v.enlace); e.target.textContent = 'Copiado'; } catch { e.target.textContent = 'Cópialo a mano'; } } }, 'Copiar'))],
         h('label', null, 'Etapa del trámite' + (listo ? '' : ' (se habilita con pago confirmado y registro completo)')), selector),
@@ -240,9 +240,12 @@ function detalle(v) {
             'Soporte ' + (i + 1) + ': ' + pesos(uno.valor, uno.moneda) + (uno.referencia ? ' · ref. ' + uno.referencia : '') + ' · ' + fecha(uno.recibido) + ' ',
             String(uno.archivo || '').startsWith('https://') && h('a', { href: uno.archivo, target: '_blank', rel: 'noopener noreferrer' }, 'Ver archivo'))))],
           v.estado_pago !== 'Confirmado' && h('div', { clase: 'acciones' },
-            h('button', { clase: 'bien', alClick: () => ejecutar('confirmar_pago', { id: v.id, confirmado: true }, error) }, 'Contabilidad: confirmar pago'),
+            h('button', { clase: 'bien', alClick: () => ejecutar('confirmar_pago', { id: v.id, confirmado: true }, error) }, 'Contabilidad: confirmar lo recibido (' + pesos(pago.pagado, pago.moneda_venta) + ')'),
             h('button', { clase: 'mal', alClick: () => ejecutar('confirmar_pago', { id: v.id, confirmado: false }, error) }, 'Rechazar'))]
-          : h('p', { clase: 'suave' }, 'El cliente aún no ha enviado el soporte de pago por WhatsApp.')),
+          : h('p', { clase: 'suave' }, 'El cliente aún no ha enviado el soporte de pago por WhatsApp.'),
+        v.valor > 0 && !(v.estado_pago === 'Confirmado' && pago && pago.saldo <= 0) && h('div', { clase: 'acciones' }, h('button', { alClick: () => abrirDialogo('Registrar pago a mano',
+          'Para pagos que no llegaron por el chat (efectivo, consignación, etc.).', [['valor', 'Valor pagado'], ['moneda', 'Moneda (COP o EUR)', v.moneda || 'COP'], ['medio', 'Medio de pago'], ['referencia', 'Referencia'], ['fecha', 'Fecha del pago']],
+          (datos) => accion('registrar_pago', { id: v.id, ...datos })) }, 'Registrar pago a mano'))),
       h('div', { clase: 'tarjeta' }, h('h2', null, 'Registro ', etiqueta(v.estado_registro, v.estado_registro === 'Completo' ? 'ok' : v.estado_registro === 'Faltan documentos' ? 'alerta' : '')),
         registro ? campos([['Nombre', registro.nombre], ['Cédula', registro.cedula], ['Nacimiento', registro.fecha_nacimiento], ['Correo', registro.correo],
           ['Universidad', registro.universidad], ['Título', registro.titulo], ['Fecha de grado', registro.fecha_grado], ['Código de verificación', registro.codigo_verificacion],
@@ -250,9 +253,16 @@ function detalle(v) {
           ['Legibilidad', registro.legibilidad], ['Diferencias', registro.diferencias],
           ['Lectura automática', registro.lectura && etiqueta(registro.lectura.estado === 'hecha' ? 'Leído con IA' : registro.lectura.estado === 'pendiente' ? 'Leyendo…' : 'Revisar a mano', registro.lectura.estado === 'hecha' ? 'ok' : 'alerta')],
           ['Observaciones de la lectura', registro.lectura && registro.lectura.observaciones],
+          ['Documentos del chat', registro.archivos_chat && Object.keys(registro.archivos_chat).length > 0 && h('span', null, Object.entries(registro.archivos_chat).map(([documento, direccion]) =>
+            String(direccion).startsWith('https://') && h('a', { href: direccion, target: '_blank', rel: 'noopener noreferrer' }, 'Ver ' + documento + '  '))) ],
           ['Archivos del formulario', registro.archivos_formulario && h('span', null, Object.keys(registro.archivos_formulario).map((documento) =>
             h('button', { alClick: () => abrirDocumento(v.id, documento, error) }, 'Ver ' + documento)))]])
           : h('p', { clase: 'suave' }, 'El cliente aún no ha enviado sus documentos.'),
+        h('div', { clase: 'acciones' }, h('button', { alClick: () => abrirDialogo('Corregir datos del cliente', 'Deja en blanco lo que no quieras cambiar.',
+          [['nombre', 'Nombre completo', registro && registro.nombre], ['cedula', 'Cédula o pasaporte', registro && registro.cedula], ['correo', 'Correo', registro && registro.correo],
+            ['universidad', 'Universidad', registro && registro.universidad], ['titulo', 'Título', registro && registro.titulo], ['fecha_grado', 'Fecha de grado', registro && registro.fecha_grado],
+            ['documentos_recibidos', 'Documentos recibidos (titulo, notas, cedula)', registro && (registro.documentos_recibidos || []).join(', ')]],
+          (datos) => accion('editar_registro', { id: v.id, ...datos })) }, 'Corregir datos')),
         registro && registro.archivos_formulario && registro.lectura && registro.lectura.estado !== 'hecha' && h('div', { clase: 'acciones' },
           h('button', { alClick: async (e) => { e.target.disabled = true; e.target.textContent = 'Leyendo… (tarda hasta un minuto)'; try { await pedir('/api/leer', { id: v.id }); } catch (fallo) { error.textContent = fallo.message; } } }, 'Leer documentos con IA'))),
       h('div', { clase: 'tarjeta' }, h('h2', null, 'Historial'),
@@ -268,6 +278,23 @@ async function abrirDocumento(id, documento, error) {
     const { direccion } = await pedir('/api/documento', { id, documento });
     if (ventana) ventana.location = direccion; else window.location = direccion;
   } catch (fallo) { if (ventana) ventana.close(); error.textContent = fallo.message; }
+}
+
+/** Ventana con unos campos de texto; campos es una lista de [id, etiqueta, valor inicial]. */
+function abrirDialogo(titulo, ayuda, campos, alGuardar) {
+  const error = h('p', { clase: 'error', role: 'alert' });
+  const dialogo = h('dialog', { clase: 'tarjeta' });
+  const entradas = campos.map(([id, etiquetaDelCampo, valor]) => [id, h('input', { id: 'd-' + id, value: valor || '' }), etiquetaDelCampo]);
+  dialogo.append(h('form', { alSubmit: async (evento) => {
+    evento.preventDefault();
+    try { await alGuardar(Object.fromEntries(entradas.map(([id, entrada]) => [id, entrada.value.trim()]))); dialogo.close(); dialogo.remove(); await cargar(); }
+    catch (fallo) { error.textContent = fallo.message; }
+  } }, h('h2', null, titulo), ayuda && h('p', { clase: 'suave' }, ayuda),
+    entradas.map(([id, entrada, etiquetaDelCampo]) => [h('label', { for: 'd-' + id }, etiquetaDelCampo), entrada]), error,
+    h('div', { clase: 'acciones' }, h('button', { clase: 'primario', type: 'submit' }, 'Guardar'),
+      h('button', { type: 'button', alClick: () => { dialogo.close(); dialogo.remove(); } }, 'Cancelar'))));
+  document.body.append(dialogo);
+  dialogo.showModal();
 }
 
 function abrirNuevaVenta(existente) {
