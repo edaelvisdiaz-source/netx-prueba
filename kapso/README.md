@@ -100,6 +100,10 @@ permitidas al despliegue público del mismo código (`crm-demo-panel`,
 `fee3c4ce-3ad8-4bcc-aae2-18c6e585a1be`), que exige el secreto `CLAVE_PANEL` y no acepta
 llamadas de herramienta. El navegador nunca ve esa clave.
 
+En AWS (us-east-1): función `apostillas-demo-pantalla` con dirección pública
+`https://y5b7snu3g3rvlebookdtwtagiq0yjksw.lambda-url.us-east-1.on.aws/` y rol del mismo nombre,
+que solo puede escribir sus propios registros. Para retirarla basta borrar esas dos piezas.
+
 Variables de la Lambda (ninguna va en el repositorio): `USUARIO`, `CLAVE_HASH` (`sal:hash`
 scrypt en hexadecimal), `SECRETO_SESION`, `KAPSO_URL`, `KAPSO_CLAVE`.
 
