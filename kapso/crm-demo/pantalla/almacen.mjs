@@ -19,6 +19,7 @@ export function crearAlmacen(deposito) {
       }),
     direccionParaVer: (ruta) =>
       getSignedUrl(s3, new GetObjectCommand({ Bucket: deposito, Key: ruta, ResponseContentDisposition: 'attachment' }), { expiresIn: MINUTOS_PARA_VER * 60 }),
+    leer: async (ruta) => Buffer.from(await (await s3.send(new GetObjectCommand({ Bucket: deposito, Key: ruta }))).Body.transformToByteArray()),
     /** Tamano del archivo en bytes, o null si no existe. */
     tamano: async (ruta) => {
       try {

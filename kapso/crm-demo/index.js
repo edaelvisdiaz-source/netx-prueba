@@ -232,6 +232,23 @@ async function cerrarRegistro(env, venta, registro, ahora, origen) {
   return { venta: nueva, estado, faltantes };
 }
 
+/** Guarda lo que la lectura automatica saco de los documentos del formulario. */
+async function guardarLectura(env, datos, ahora) {
+  const venta = await porId(env, datos.id);
+  if (!venta.registro) throw new ErrorDeUso('Esta venta no tiene registro');
+  const estado = datos.lectura?.estado === 'hecha' ? 'hecha' : 'fallida';
+  const lectura = { estado, observaciones: texto(datos.lectura?.observaciones), fecha: ahora };
+  if (estado === 'fallida') {
+    return { ok: true, venta: await guardar(env, venta, { registro: { ...venta.registro, lectura } }, ahora, 'Lectura automática fallida: revisar documentos a mano') };
+  }
+  const registro = unirRegistro(venta.registro, {
+    nombre: texto(datos.nombre), cedula: texto(datos.cedula).replace(/[.\s]/g, ''), fecha_nacimiento: texto(datos.fecha_nacimiento), universidad: texto(datos.universidad),
+    titulo: texto(datos.titulo), fecha_grado: texto(datos.fecha_grado), codigo_verificacion: texto(datos.codigo_verificacion),
+    legibilidad: texto(datos.legibilidad), diferencias: texto(datos.diferencias), lectura,
+  });
+  return { ok: true, venta: (await cerrarRegistro(env, venta, registro, ahora, 'leído con IA')).venta };
+}
+
 /** Lo minimo que ve quien abre el enlace: nada de valores, telefonos ni datos ya registrados. */
 async function verFormulario(env, datos) {
   const venta = await porCodigo(env, datos.codigo);
@@ -249,7 +266,7 @@ async function enviarFormulario(env, datos, ahora) {
     if (!ruta.startsWith(`ventas/${venta.id}/${documento}-`)) throw new ErrorDeUso(`Falta el documento: ${documento}`);
     archivos[documento] = ruta;
   }
-  const registro = unirRegistro(venta.registro, { correo, documentos_recibidos: DOCUMENTOS_OBLIGATORIOS, archivos_formulario: archivos, acepto_terminos: ahora, recibido: ahora });
+  const registro = unirRegistro(venta.registro, { correo, documentos_recibidos: DOCUMENTOS_OBLIGATORIOS, archivos_formulario: archivos, acepto_terminos: ahora, recibido: ahora, lectura: { estado: 'pendiente', observaciones: '' } });
   const { estado } = await cerrarRegistro(env, venta, registro, ahora, 'por formulario');
   return { ok: true, estado };
 }
@@ -298,6 +315,7 @@ async function comoPanel(env, cuerpo, ahora) {
   switch (cuerpo.accion) {
     case 'listar': return { ok: true, ventas: await todas(env), asesoras: [...TITULARES, REEMPLAZO], etapas: ETAPAS_MANUALES };
     case 'formulario_ver': return verFormulario(env, cuerpo);
+    case 'guardar_lectura': return guardarLectura(env, cuerpo, ahora);
     case 'formulario_enviar': return enviarFormulario(env, cuerpo, ahora);
     case 'cambiar_etapa': return { ok: true, venta: await cambiarEtapa(env, cuerpo, ahora) };
     case 'crear_venta': return { ok: true, venta: await crearVenta(env, cuerpo, ahora) };

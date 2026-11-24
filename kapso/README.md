@@ -109,8 +109,11 @@ protege: el cliente escribe su correo, sube cédula, título y notas y acepta lo
 archivos van directo del navegador al depósito privado `apostillas-demo-documentos-146736797821`
 (cifrado, sin acceso público, solo HTTPS, se borran a los 30 días) con direcciones firmadas de
 diez minutos; en la plataforma se ven con direcciones de cinco minutos. Lo enviado por chat y
-por formulario se suma en el mismo registro. Los documentos del formulario todavía no se leen
-con IA: eso requiere una llave de Anthropic en este programa.
+por formulario se suma en el mismo registro. Los documentos del formulario los lee
+Claude Haiku 4.5 en Amazon Bedrock (`lectura.mjs`), con el permiso del propio programa y sin
+llave, en una tarea en segundo plano que el programa se lanza a sí mismo. Para que funcione, la
+cuenta de AWS debe haber enviado una vez el formulario de caso de uso de Anthropic en Bedrock.
+Si la lectura falla, la venta queda marcada «Revisar a mano» y se puede repetir desde la plataforma.
 
 Variables de la Lambda (ninguna va en el repositorio): `USUARIO`, `CLAVE_HASH` (`sal:hash`
 scrypt en hexadecimal), `SECRETO_SESION`, `KAPSO_URL`, `KAPSO_CLAVE`.

@@ -232,9 +232,13 @@ function detalle(v) {
           ['Universidad', registro.universidad], ['Título', registro.titulo], ['Fecha de grado', registro.fecha_grado], ['Código de verificación', registro.codigo_verificacion],
           ['Recibidos', registro.documentos_recibidos.join(', ')], ['Faltan', registro.documentos_faltantes.join(', ')],
           ['Legibilidad', registro.legibilidad], ['Diferencias', registro.diferencias],
+          ['Lectura automática', registro.lectura && etiqueta(registro.lectura.estado === 'hecha' ? 'Leído con IA' : registro.lectura.estado === 'pendiente' ? 'Leyendo…' : 'Revisar a mano', registro.lectura.estado === 'hecha' ? 'ok' : 'alerta')],
+          ['Observaciones de la lectura', registro.lectura && registro.lectura.observaciones],
           ['Archivos del formulario', registro.archivos_formulario && h('span', null, Object.keys(registro.archivos_formulario).map((documento) =>
             h('button', { alClick: () => abrirDocumento(v.id, documento, error) }, 'Ver ' + documento)))]])
-          : h('p', { clase: 'suave' }, 'El cliente aún no ha enviado sus documentos.')),
+          : h('p', { clase: 'suave' }, 'El cliente aún no ha enviado sus documentos.'),
+        registro && registro.archivos_formulario && registro.lectura && registro.lectura.estado !== 'hecha' && h('div', { clase: 'acciones' },
+          h('button', { alClick: async (e) => { e.target.disabled = true; e.target.textContent = 'Leyendo… (tarda hasta un minuto)'; try { await pedir('/api/leer', { id: v.id }); } catch (fallo) { error.textContent = fallo.message; } } }, 'Leer documentos con IA'))),
       h('div', { clase: 'tarjeta' }, h('h2', null, 'Historial'),
         h('ul', { clase: 'historial' }, [...v.historial].reverse().map((paso) => h('li', null, h('span', { clase: 'suave' }, fecha(paso.fecha) + ' · '), paso.hecho))))),
     error,

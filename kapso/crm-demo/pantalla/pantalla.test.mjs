@@ -2,7 +2,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomBytes, scryptSync } from 'node:crypto';
-import { atender, claveCorrecta, crearSesion, sesionValida } from './index.mjs';
+import { atender, claveCorrecta, crearSesion, sesionValida, tareaDeLectura } from './index.mjs';
+import { leerDocumentos } from './lectura.mjs';
 
 const sal = randomBytes(16);
 const ENV = {
@@ -151,8 +152,10 @@ test('al enviar verifica que los tres archivos llegaron y son de esa venta', asy
   const pesado = JSON.parse((await enviar(archivos, almacenDePrueba({ 'ventas/venta-1/titulo-a.pdf': 20 * 1024 * 1024 }))).body);
   assert.equal(pesado.ok, false);
   assert.equal(llamadas.filter((llamada) => llamada.accion === 'formulario_enviar').length, 0);
-  const bien = JSON.parse((await enviar(archivos, almacenDePrueba())).body);
+  const tareas = [];
+  const bien = JSON.parse((await atender(evento('/api/formulario/enviar', { codigo: CODIGO, correo: 'a@b.co', acepta: true, archivos }), ENV, AHORA, almacenDePrueba(), async (tarea) => { tareas.push(tarea); })).body);
   assert.deepEqual(bien, { ok: true });
+  assert.deepEqual(tareas, [{ tarea: 'leer', id: 'venta-1' }]);
 });
 
 test('los documentos solo se pueden ver con sesion', async (t) => {
@@ -163,4 +166,49 @@ test('los documentos solo se pueden ver con sesion', async (t) => {
   assert.match(conSesion.direccion, /cedula-a\.pdf\?ver$/);
   const inexistente = JSON.parse((await atender(evento('/api/documento', { id: 'venta-1', documento: 'notas' }, { cookie: sesion() }), ENV, AHORA, almacenDePrueba())).body);
   assert.equal(inexistente.ok, false);
+});
+
+const ARCHIVOS = { cedula: 'ventas/v/cedula-a.jpg', titulo: 'ventas/v/titulo-a.pdf', notas: 'ventas/v/notas-a.pdf' };
+const respuestaDelModelo = (input) => ({ output: { message: { content: [{ toolUse: { name: 'registrar', input } }] } } });
+
+test('la lectura envia cada documento al modelo y devuelve los datos con observaciones', async () => {
+  const solicitudes = [];
+  const datos = await leerDocumentos(ARCHIVOS, {
+    leer: async () => Buffer.from('contenido'),
+    conversar: async (solicitud) => { solicitudes.push(solicitud); return respuestaDelModelo({ nombre: 'Felipe Roldan', cedula: '1116156739', universidad: 'VIU', titulo: 'Master', diferencias: '', legibilidad: '',
+      documentos: [{ documento: 'cedula', corresponde: true, legible: true }, { documento: 'notas', corresponde: false, legible: true }] }); },
+  });
+  const partes = solicitudes[0].messages[0].content;
+  assert.equal(partes.filter((parte) => parte.document).length, 2);
+  assert.equal(partes.filter((parte) => parte.image).length, 1);
+  assert.equal(solicitudes[0].toolConfig.toolChoice.tool.name, 'registrar');
+  assert.equal(datos.nombre, 'Felipe Roldan');
+  assert.equal(datos.lectura.estado, 'hecha');
+  assert.match(datos.lectura.observaciones, /Certificado academico de notas: no parece ser ese documento/);
+});
+
+test('los archivos muy pesados no se envian al modelo y quedan anotados', async () => {
+  const pesado = Buffer.alloc(5 * 1024 * 1024);
+  const todos = await leerDocumentos(ARCHIVOS, { leer: async () => pesado, conversar: async () => { throw new Error('no debe llamarse'); } });
+  assert.equal(todos.lectura.estado, 'fallida');
+  const uno = await leerDocumentos(ARCHIVOS, { leer: async (ruta) => (ruta.includes('titulo') ? pesado : Buffer.from('x')), conversar: async () => respuestaDelModelo({ nombre: 'A', documentos: [] }) });
+  assert.match(uno.lectura.observaciones, /No se leyeron por su peso: Diploma/);
+});
+
+test('si el modelo falla, la venta queda marcada para revision manual', async (t) => {
+  const llamadas = sistemaDePrueba(t, { ver: { ok: true, venta: { registro: { archivos_formulario: ARCHIVOS } } }, guardar_lectura: { ok: true } });
+  t.mock.method(console, 'error', () => undefined);
+  await tareaDeLectura('venta-1', ENV, { almacen: { leer: async () => Buffer.from('x') }, conversar: async () => { throw new Error('ThrottlingException'); } });
+  const guardada = llamadas.find((llamada) => llamada.accion === 'guardar_lectura');
+  assert.equal(guardada.lectura.estado, 'fallida');
+  assert.equal(guardada.id, 'venta-1');
+});
+
+test('repetir la lectura exige sesion y lanza la tarea', async () => {
+  const tareas = [];
+  const lanzar = async (tarea) => { tareas.push(tarea); };
+  assert.equal((await atender(evento('/api/leer', { id: 'venta-1' }), ENV, AHORA, almacenDePrueba(), lanzar)).statusCode, 401);
+  const respuesta = await atender(evento('/api/leer', { id: 'venta-1' }, { cookie: sesion() }), ENV, AHORA, almacenDePrueba(), lanzar);
+  assert.equal(respuesta.statusCode, 200);
+  assert.deepEqual(tareas, [{ tarea: 'leer', id: 'venta-1' }]);
 });

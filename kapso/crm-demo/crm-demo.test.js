@@ -198,3 +198,21 @@ test('lo que llega por chat y por formulario se suma sin borrarse', async () => 
   assert.equal(final.registro.archivos_formulario.titulo, archivos.titulo);
   assert.equal(final.estado_registro, 'Completo');
 });
+
+test('la lectura automatica completa los datos sin borrar el correo ni los archivos', async () => {
+  const env = entornoDePrueba();
+  const { venta } = await llamar(env, VENTA);
+  const codigo = venta.enlace.split('/f/')[1];
+  const archivos = { titulo: `ventas/${venta.id}/titulo-1.pdf`, notas: `ventas/${venta.id}/notas-1.pdf`, cedula: `ventas/${venta.id}/cedula-1.pdf` };
+  await llamar(env, { accion: 'formulario_enviar', codigo, correo: 'a@b.co', acepta: true, archivos });
+  assert.equal((await llamar(env, { accion: 'ver', id: venta.id })).venta.registro.lectura.estado, 'pendiente');
+  const leida = await llamar(env, { accion: 'guardar_lectura', id: venta.id, nombre: 'David Andres Lasso Garcia', cedula: '1.088.357.834', universidad: 'UNIR', titulo: 'Master', lectura: { estado: 'hecha', observaciones: '' } });
+  assert.equal(leida.venta.cliente, 'David Andres Lasso Garcia');
+  assert.equal(leida.venta.registro.cedula, '1088357834');
+  assert.equal(leida.venta.registro.correo, 'a@b.co');
+  assert.equal(leida.venta.registro.archivos_formulario.cedula, archivos.cedula);
+  assert.equal(leida.venta.estado_registro, 'Completo');
+  const fallida = await llamar(env, { accion: 'guardar_lectura', id: venta.id, lectura: { estado: 'fallida', observaciones: 'muy pesado' } });
+  assert.equal(fallida.venta.registro.lectura.estado, 'fallida');
+  assert.equal(fallida.venta.registro.nombre, 'David Andres Lasso Garcia');
+});

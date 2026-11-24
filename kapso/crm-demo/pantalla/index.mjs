@@ -9,6 +9,7 @@
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { PAGINA } from './pagina.mjs';
 import { FORMULARIO } from './formulario.mjs';
+import { leerDocumentos } from './lectura.mjs';
 
 const HORAS_DE_SESION = 12;
 const MAXIMO_INTENTOS = 5;
@@ -134,7 +135,7 @@ async function prepararSubida(datos, env, almacen) {
   return responder(200, { ok: true, ruta, direccion: await almacen.direccionParaSubir(ruta, datos.tipo) });
 }
 
-async function enviarFormulario(datos, env, almacen) {
+async function enviarFormulario(datos, env, almacen, despachar) {
   const venta = await sistema({ accion: 'formulario_ver', codigo: datos.codigo }, env);
   if (!venta.ok) return responder(200, venta);
   const archivos = {};
@@ -148,7 +149,25 @@ async function enviarFormulario(datos, env, almacen) {
     archivos[documento] = ruta;
   }
   const resultado = await sistema({ accion: 'formulario_enviar', codigo: datos.codigo, correo: datos.correo, acepta: datos.acepta === true, archivos }, env);
-  return responder(200, resultado.ok ? { ok: true } : resultado);
+  if (!resultado.ok) return responder(200, resultado);
+  // La lectura con IA va aparte: si no arranca, el registro ya quedo guardado y la asesora lo revisa.
+  await despachar({ tarea: 'leer', id: venta.id }).catch((error) => console.error('No arranco la lectura', error instanceof Error ? error.message : error));
+  return responder(200, { ok: true });
+}
+
+/** Tarea en segundo plano: lee los documentos del formulario y guarda los datos en el sistema. */
+export async function tareaDeLectura(id, env, { almacen, conversar }) {
+  const { venta } = await sistema({ accion: 'ver', id }, env);
+  const archivos = venta?.registro?.archivos_formulario;
+  if (!archivos) return { ok: false, error: 'La venta no tiene documentos del formulario' };
+  let datos;
+  try {
+    datos = await leerDocumentos(archivos, { leer: almacen.leer, conversar });
+  } catch (error) {
+    console.error('Fallo la lectura', error instanceof Error ? `${error.name}: ${error.message}` : error);
+    datos = { lectura: { estado: 'fallida', observaciones: 'No se pudo leer automáticamente; revisar a mano' } };
+  }
+  return sistema({ accion: 'guardar_lectura', id, ...datos }, env);
 }
 
 async function verDocumento(datos, env, almacen) {
@@ -169,7 +188,7 @@ function pagina(plantilla, origenesExtra = '') {
   return responder(200, plantilla.replaceAll('__NONCE__', nonce), { 'Content-Security-Policy': politica });
 }
 
-export async function atender(evento, env, ahora = Date.now(), almacen = null) {
+export async function atender(evento, env, ahora = Date.now(), almacen = null, despachar = async () => undefined) {
   const metodo = evento.requestContext?.http?.method || 'GET';
   const ruta = evento.rawPath || '/';
   if (metodo === 'GET' && ruta === '/') return pagina(PAGINA);
@@ -186,11 +205,13 @@ export async function atender(evento, env, ahora = Date.now(), almacen = null) {
   // El formulario es publico: lo protege el codigo del enlace, que solo conoce el cliente.
   if (ruta === '/api/formulario/ver') return conSistema(async () => { const v = await sistema({ accion: 'formulario_ver', codigo: datos.codigo }, env); return responder(200, v.ok ? { ok: true, servicio: v.servicio, enviado: v.enviado } : v); });
   if (ruta === '/api/formulario/subir') return conSistema(() => prepararSubida(datos, env, almacen));
-  if (ruta === '/api/formulario/enviar') return conSistema(() => enviarFormulario(datos, env, almacen));
+  if (ruta === '/api/formulario/enviar') return conSistema(() => enviarFormulario(datos, env, almacen, despachar));
   if (!sesionValida(leerCookie(evento), env.SECRETO_SESION, ahora)) return responder(401, { ok: false, error: 'Sesión vencida' });
   if (ruta === '/api/salir') return responder(200, { ok: true }, {}, [`${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`]);
   if (ruta === '/api/accion') return reenviar(datos, env);
   if (ruta === '/api/documento') return conSistema(() => verDocumento(datos, env, almacen));
+  // Repetir la lectura automatica de una venta, por ejemplo si fallo la primera vez.
+  if (ruta === '/api/leer') return conSistema(async () => { await despachar({ tarea: 'leer', id: String(datos.id || '') }); return responder(200, { ok: true }); });
   return responder(404, { ok: false, error: 'No existe' });
 }
 
@@ -200,5 +221,8 @@ let almacenReal = null;
 export const handler = async (evento) => {
   const env = { ...process.env, DOCUMENTOS_BUCKET: process.env.DOCUMENTOS_BUCKET || DEPOSITO };
   if (!almacenReal) almacenReal = (await import('./almacen.mjs')).crearAlmacen(env.DOCUMENTOS_BUCKET);
-  return atender(evento, env, Date.now(), almacenReal);
+  const servicios = await import('./servicios.mjs');
+  // Las tareas en segundo plano llegan sin forma de solicitud web: solo este programa puede lanzarlas.
+  if (evento.tarea === 'leer' && !evento.requestContext) return tareaDeLectura(String(evento.id), env, { almacen: almacenReal, conversar: servicios.conversar });
+  return atender(evento, env, Date.now(), almacenReal, servicios.despachar);
 };
