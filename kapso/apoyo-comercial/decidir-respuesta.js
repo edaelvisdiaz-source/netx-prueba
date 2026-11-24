@@ -7,6 +7,8 @@ const API_DE_WHATSAPP = 'https://api.kapso.ai/meta/whatsapp/v24.0';
 const MAXIMO_DE_UN_MENSAJE = 4000;
 // Identificador en WhatsApp de la imagen de tarifas; se fija con la accion `fijar_tarifa`.
 const CLAVE_DE_LA_TARIFA = 'apoyo:tarifa_media_id';
+// Cuando el cliente escribe varios mensajes seguidos, cada uno lanza a la IA; solo debe salir una respuesta.
+const SEGUNDOS_ENTRE_RESPUESTAS = 25;
 
 async function mensaje(env, lineaId, telefono, contenido) {
   const respuesta = await fetch(`${API_DE_WHATSAPP}/${lineaId}/messages`, {
@@ -26,6 +28,15 @@ async function enviar(env, lineaId, telefono, texto, conTarifa) {
   return deLaImagen && deLaImagen !== 'enviado' ? `${delTexto}; imagen ${deLaImagen}` : delTexto;
 }
 
+/** Marca que se le va a responder a este cliente; devuelve true si ya se le respondio hace un momento. */
+async function acabaDeResponder(env, telefono) {
+  const clave = `apoyo:respondido:${telefono}`;
+  const ultima = Number(await env.KV.get(clave)) || 0;
+  if (Date.now() - ultima < SEGUNDOS_ENTRE_RESPUESTAS * 1000) return true;
+  await env.KV.put(clave, String(Date.now()), { expirationTtl: 3600 });
+  return false;
+}
+
 async function handler(request, env) {
   const cuerpo = await request.json().catch(() => ({}));
   const contexto = cuerpo.execution_context || {};
@@ -42,6 +53,7 @@ async function handler(request, env) {
   if (texto && esDecision) {
     if (!env.KAPSO_API_KEY) resultado = 'falta el secreto KAPSO_API_KEY';
     else if (!telefono || !lineaId) resultado = 'faltan el telefono o la linea';
+    else if (await acabaDeResponder(env, telefono)) resultado = 'omitido: ya se respondio hace un momento';
     else resultado = await enviar(env, lineaId, telefono, texto, /^s[ií]/i.test(String(contexto.vars?.enviar_tarifa ?? ''))).catch(() => 'error de red');
   }
   const salida = esDecision ? { next_edge: 'callar', vars: { envio: resultado } } : { ok: true };

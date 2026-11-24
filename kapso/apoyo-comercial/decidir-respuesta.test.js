@@ -62,3 +62,12 @@ test('si no hay imagen configurada envia solo el texto y lo anota', async (t) =>
   assert.equal(cuerpos.length, 1);
   assert.match(salida.vars.envio, /sin imagen de tarifa/);
 });
+
+test('si el cliente escribe dos mensajes seguidos solo sale una respuesta', async (t) => {
+  const espia = t.mock.method(globalThis, 'fetch', async () => new Response('{}'));
+  const KV = almacen();
+  const pedido = { available_edges: ['enviar', 'callar'], execution_context: contexto('Hola') };
+  assert.equal((await llamar(pedido, { KAPSO_API_KEY: 'llave', KV })).vars.envio, 'enviado');
+  assert.match((await llamar(pedido, { KAPSO_API_KEY: 'llave', KV })).vars.envio, /omitido/);
+  assert.equal(espia.mock.callCount(), 1);
+});
