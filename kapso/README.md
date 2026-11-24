@@ -22,6 +22,7 @@ Titulares, reemplazo, horario y texto del aviso están en `CONFIG`, al inicio de
 | Pieza | Nombre | Identificador |
 |---|---|---|
 | Función | Reparto de asesoras (`asignar-asesora`) | `f86088a6-1c94-4e32-9870-68fe27776001` |
+| Función | Registro de clientes (`registro-de-clientes`) | `f08aa423-8b18-4a9e-9f24-acfe6e2a987e` |
 | Automatización | Reparto de asesoras | `b59e1c7f-a562-4de0-b3d2-b5402d5ec51c` |
 | Disparador | Conversación creada, línea de pruebas | `25ecc94c-3938-4dbd-b70d-971114ca1d58` |
 | Línea de pruebas | +1 202-589-9059 | `1389236027614507` |
@@ -47,3 +48,17 @@ Para cambiar el código: editar `index.js`, pasar las pruebas y volver a despleg
 ```
 node --test kapso/asignar-asesora/reparto.test.js
 ```
+
+## Registro de clientes por WhatsApp (en construcción)
+
+El cliente envía sus datos y documentos por WhatsApp; la función `registro-de-clientes` los lee
+con IA y prepara el registro para el CRM. Necesita dos secretos en su página (Secrets):
+`ANTHROPIC_API_KEY` y `KAPSO_API_KEY`. Para comprobar que están, sin verlos:
+`{"accion":"probar"}` en su dirección de invocación.
+
+Reglas acordadas:
+
+- Obligatorios: título, certificado de notas y cédula; además correo electrónico y WhatsApp.
+- Si un documento sale borroso se le dice al cliente en el momento y elige reenviarlo o
+  continuar; a la asesora le queda el aviso. Basta con que sea legible.
+- El soporte de pago se lee y queda pendiente: quien confirma el pago es Contabilidad, en el CRM.
