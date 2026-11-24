@@ -2,9 +2,13 @@
 // Muestra la pagina, valida el usuario y reenvia cada accion a la funcion publica de Kapso
 // (`crm-demo-panel`), que es donde estan los datos. El navegador nunca ve la clave de Kapso.
 //
-// Variables: USUARIO, CLAVE_HASH ("sal:hash" en hexadecimal, scrypt), SECRETO_SESION, KAPSO_URL, KAPSO_CLAVE.
+// Ademas sirve el formulario publico de cada venta (/f/<codigo>): el cliente escribe su correo y sube
+// sus tres documentos a un almacenamiento privado.
+//
+// Variables: DOCUMENTOS_BUCKET, USUARIO, CLAVE_HASH ("sal:hash" en hexadecimal, scrypt), SECRETO_SESION, KAPSO_URL, KAPSO_CLAVE.
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { PAGINA } from './pagina.mjs';
+import { FORMULARIO } from './formulario.mjs';
 
 const HORAS_DE_SESION = 12;
 const MAXIMO_INTENTOS = 5;
@@ -12,6 +16,10 @@ const MINUTOS_DE_BLOQUEO = 15;
 const MAXIMO_CUERPO = 20_000;
 const ACCIONES = new Set(['listar', 'ver', 'crear_venta', 'confirmar_pago', 'cambiar_etapa', 'eliminar']);
 const COOKIE = 'sesion_demo';
+const DOCUMENTOS = ['cedula', 'titulo', 'notas'];
+const TIPOS = { 'application/pdf': 'pdf', 'image/jpeg': 'jpg', 'image/png': 'png' };
+const MAXIMO_ARCHIVO = 15 * 1024 * 1024;
+const RUTA_FORMULARIO = /^\/f\/[0-9a-f]{24}$/;
 
 // Solo protege a esta copia del programa; para una demo de un usuario es suficiente.
 const intentos = { fallos: 0, bloqueadoHasta: 0 };
@@ -93,37 +101,79 @@ function entrar(datos, env, ahora) {
   return responder(200, { ok: true }, {}, [cookie]);
 }
 
-async function reenviar(datos, env) {
-  if (!ACCIONES.has(datos.accion)) return responder(400, { ok: false, error: 'Acción desconocida' });
+async function sistema(datos, env) {
+  const respuesta = await fetch(env.KAPSO_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Demo-Token': env.KAPSO_CLAVE },
+    body: JSON.stringify(datos),
+    signal: AbortSignal.timeout(20_000),
+  });
+  const cuerpo = await respuesta.json().catch(() => null);
+  if (!respuesta.ok || !cuerpo) throw new Error(`El sistema respondio ${respuesta.status}`);
+  return cuerpo;
+}
+
+/** Llama al sistema y convierte cualquier fallo en una respuesta clara, sin detalles internos. */
+async function conSistema(tarea) {
   try {
-    const respuesta = await fetch(env.KAPSO_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Demo-Token': env.KAPSO_CLAVE },
-      body: JSON.stringify(datos),
-      signal: AbortSignal.timeout(20_000),
-    });
-    const cuerpo = await respuesta.json().catch(() => null);
-    if (!respuesta.ok || !cuerpo) {
-      console.error('El sistema respondio mal', respuesta.status);
-      return responder(502, { ok: false, error: 'El sistema no respondió. Intenta de nuevo.' });
-    }
-    return responder(200, cuerpo);
+    return await tarea();
   } catch (error) {
-    console.error('No se pudo llamar al sistema', error instanceof Error ? error.message : error);
+    console.error('Fallo una accion', error instanceof Error ? error.message : error);
     return responder(502, { ok: false, error: 'El sistema no respondió. Intenta de nuevo.' });
   }
 }
 
-function pagina() {
-  const nonce = randomBytes(16).toString('base64');
-  const politica = `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
-  return responder(200, PAGINA.replaceAll('__NONCE__', nonce), { 'Content-Security-Policy': politica });
+async function prepararSubida(datos, env, almacen) {
+  const extension = TIPOS[datos.tipo];
+  if (!DOCUMENTOS.includes(datos.documento)) return responder(400, { ok: false, error: 'Documento desconocido' });
+  if (!extension) return responder(400, { ok: false, error: 'Solo se aceptan archivos PDF, JPG o PNG' });
+  if (!(Number(datos.tamano) > 0) || Number(datos.tamano) > MAXIMO_ARCHIVO) return responder(400, { ok: false, error: 'El archivo debe pesar menos de 15 MB' });
+  const venta = await sistema({ accion: 'formulario_ver', codigo: datos.codigo }, env);
+  if (!venta.ok) return responder(200, venta);
+  const ruta = `ventas/${venta.id}/${datos.documento}-${randomBytes(8).toString('hex')}.${extension}`;
+  return responder(200, { ok: true, ruta, direccion: await almacen.direccionParaSubir(ruta, datos.tipo) });
 }
 
-export async function atender(evento, env, ahora = Date.now()) {
+async function enviarFormulario(datos, env, almacen) {
+  const venta = await sistema({ accion: 'formulario_ver', codigo: datos.codigo }, env);
+  if (!venta.ok) return responder(200, venta);
+  const archivos = {};
+  for (const documento of DOCUMENTOS) {
+    const ruta = String(datos.archivos?.[documento] || '');
+    // Solo se aceptan archivos que este programa autorizo para esta venta y que de verdad llegaron.
+    if (!ruta.startsWith(`ventas/${venta.id}/${documento}-`)) return responder(200, { ok: false, error: 'Faltan documentos por subir' });
+    const tamano = await almacen.tamano(ruta);
+    if (tamano === null || tamano === 0) return responder(200, { ok: false, error: 'Un documento no terminó de subir. Vuelve a adjuntarlo.' });
+    if (tamano > MAXIMO_ARCHIVO) return responder(200, { ok: false, error: 'Un documento pesa más de 15 MB' });
+    archivos[documento] = ruta;
+  }
+  const resultado = await sistema({ accion: 'formulario_enviar', codigo: datos.codigo, correo: datos.correo, acepta: datos.acepta === true, archivos }, env);
+  return responder(200, resultado.ok ? { ok: true } : resultado);
+}
+
+async function verDocumento(datos, env, almacen) {
+  const respuesta = await sistema({ accion: 'ver', id: datos.id }, env);
+  const ruta = respuesta.venta?.registro?.archivos_formulario?.[datos.documento];
+  if (!ruta) return responder(200, { ok: false, error: 'Ese documento no está en el sistema' });
+  return responder(200, { ok: true, direccion: await almacen.direccionParaVer(ruta) });
+}
+
+async function reenviar(datos, env) {
+  if (!ACCIONES.has(datos.accion)) return responder(400, { ok: false, error: 'Acción desconocida' });
+  return conSistema(async () => responder(200, await sistema(datos, env)));
+}
+
+function pagina(plantilla, origenesExtra = '') {
+  const nonce = randomBytes(16).toString('base64');
+  const politica = `default-src 'none'; script-src 'nonce-${nonce}'; style-src 'nonce-${nonce}'; connect-src 'self'${origenesExtra}; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`;
+  return responder(200, plantilla.replaceAll('__NONCE__', nonce), { 'Content-Security-Policy': politica });
+}
+
+export async function atender(evento, env, ahora = Date.now(), almacen = null) {
   const metodo = evento.requestContext?.http?.method || 'GET';
   const ruta = evento.rawPath || '/';
-  if (metodo === 'GET' && ruta === '/') return pagina();
+  if (metodo === 'GET' && ruta === '/') return pagina(PAGINA);
+  if (metodo === 'GET' && RUTA_FORMULARIO.test(ruta)) return pagina(FORMULARIO, ` https://${env.DOCUMENTOS_BUCKET}.s3.${env.AWS_REGION}.amazonaws.com`);
   if (metodo !== 'POST') return responder(404, { ok: false, error: 'No existe' });
   // Las acciones solo se aceptan desde la propia pagina: JSON y un encabezado que un formulario ajeno no puede enviar.
   const encabezados = evento.headers || {};
@@ -133,10 +183,22 @@ export async function atender(evento, env, ahora = Date.now()) {
   const datos = leerCuerpo(evento);
   if (!datos) return responder(400, { ok: false, error: 'Solicitud no válida' });
   if (ruta === '/api/entrar') return entrar(datos, env, ahora);
+  // El formulario es publico: lo protege el codigo del enlace, que solo conoce el cliente.
+  if (ruta === '/api/formulario/ver') return conSistema(async () => { const v = await sistema({ accion: 'formulario_ver', codigo: datos.codigo }, env); return responder(200, v.ok ? { ok: true, servicio: v.servicio, enviado: v.enviado } : v); });
+  if (ruta === '/api/formulario/subir') return conSistema(() => prepararSubida(datos, env, almacen));
+  if (ruta === '/api/formulario/enviar') return conSistema(() => enviarFormulario(datos, env, almacen));
   if (!sesionValida(leerCookie(evento), env.SECRETO_SESION, ahora)) return responder(401, { ok: false, error: 'Sesión vencida' });
   if (ruta === '/api/salir') return responder(200, { ok: true }, {}, [`${COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0`]);
   if (ruta === '/api/accion') return reenviar(datos, env);
+  if (ruta === '/api/documento') return conSistema(() => verDocumento(datos, env, almacen));
   return responder(404, { ok: false, error: 'No existe' });
 }
 
-export const handler = (evento) => atender(evento, process.env);
+// El deposito de documentos de la demo; se puede cambiar con la variable DOCUMENTOS_BUCKET.
+const DEPOSITO = 'apostillas-demo-documentos-146736797821';
+let almacenReal = null;
+export const handler = async (evento) => {
+  const env = { ...process.env, DOCUMENTOS_BUCKET: process.env.DOCUMENTOS_BUCKET || DEPOSITO };
+  if (!almacenReal) almacenReal = (await import('./almacen.mjs')).crearAlmacen(env.DOCUMENTOS_BUCKET);
+  return atender(evento, env, Date.now(), almacenReal);
+};

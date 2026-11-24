@@ -41,6 +41,7 @@ tr.fila:hover{background:#f8fafc}
 .etiqueta.mal{background:#fbe4e2;color:var(--mal)}
 .etiqueta.azul{background:#e3edfb;color:var(--marca)}
 .suave{color:var(--suave);font-size:13px}
+dd button{margin:0 6px 6px 0;min-height:34px;padding:4px 10px}
 .dos{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
 dl{margin:0;display:grid;grid-template-columns:auto 1fr;gap:6px 12px}
 dt{color:var(--suave);font-size:13px}
@@ -214,6 +215,9 @@ function detalle(v) {
     h('div', { clase: 'dos' },
       h('div', { clase: 'tarjeta' }, h('h2', null, 'Venta'),
         campos([['WhatsApp', '+' + v.telefono], ['Servicio', v.servicio], ['Valor', pesos(v.valor)], ['Asesora', v.asesora], ['Creada', fecha(v.creada)]]),
+        v.enlace && [h('label', null, 'Enlace del formulario para el cliente'),
+          h('div', { clase: 'barra' }, h('input', { readonly: true, value: v.enlace, 'aria-label': 'Enlace del formulario', alFocus: (e) => e.target.select() }),
+            h('button', { alClick: async (e) => { try { await navigator.clipboard.writeText(v.enlace); e.target.textContent = 'Copiado'; } catch { e.target.textContent = 'Cópialo a mano'; } } }, 'Copiar'))],
         h('label', null, 'Etapa del trámite' + (listo ? '' : ' (se habilita con pago confirmado y registro completo)')), selector),
       h('div', { clase: 'tarjeta' }, h('h2', null, 'Pago ', etiqueta(v.estado_pago, v.estado_pago === 'Confirmado' ? 'ok' : v.estado_pago === 'Rechazado' ? 'mal' : 'alerta')),
         pago ? [campos([['Comparación', etiqueta(pago.comparacion, claseComparacion)], ['Valor del soporte', pesos(pago.valor)], ['Valor de la venta', pesos(pago.valor_esperado)],
@@ -227,12 +231,23 @@ function detalle(v) {
         registro ? campos([['Nombre', registro.nombre], ['Cédula', registro.cedula], ['Nacimiento', registro.fecha_nacimiento], ['Correo', registro.correo],
           ['Universidad', registro.universidad], ['Título', registro.titulo], ['Fecha de grado', registro.fecha_grado], ['Código de verificación', registro.codigo_verificacion],
           ['Recibidos', registro.documentos_recibidos.join(', ')], ['Faltan', registro.documentos_faltantes.join(', ')],
-          ['Legibilidad', registro.legibilidad], ['Diferencias', registro.diferencias]])
+          ['Legibilidad', registro.legibilidad], ['Diferencias', registro.diferencias],
+          ['Archivos del formulario', registro.archivos_formulario && h('span', null, Object.keys(registro.archivos_formulario).map((documento) =>
+            h('button', { alClick: () => abrirDocumento(v.id, documento, error) }, 'Ver ' + documento)))]])
           : h('p', { clase: 'suave' }, 'El cliente aún no ha enviado sus documentos.')),
       h('div', { clase: 'tarjeta' }, h('h2', null, 'Historial'),
         h('ul', { clase: 'historial' }, [...v.historial].reverse().map((paso) => h('li', null, h('span', { clase: 'suave' }, fecha(paso.fecha) + ' · '), paso.hecho))))),
     error,
     h('div', { clase: 'acciones' }, h('button', { clase: 'mal', alClick: () => { if (confirm('¿Eliminar esta venta de prueba?')) { estado.abierta = null; ejecutar('eliminar', { id: v.id }, error); } } }, 'Eliminar venta')));
+}
+
+async function abrirDocumento(id, documento, error) {
+  // La ventana se abre antes de pedir la direccion: si se abre despues, el navegador la bloquea.
+  const ventana = window.open('about:blank', '_blank');
+  try {
+    const { direccion } = await pedir('/api/documento', { id, documento });
+    if (ventana) ventana.location = direccion; else window.location = direccion;
+  } catch (fallo) { if (ventana) ventana.close(); error.textContent = fallo.message; }
 }
 
 function abrirNuevaVenta() {

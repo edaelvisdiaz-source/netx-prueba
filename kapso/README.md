@@ -104,6 +104,14 @@ En AWS (us-east-1): función `apostillas-demo-pantalla` con dirección pública
 `https://y5b7snu3g3rvlebookdtwtagiq0yjksw.lambda-url.us-east-1.on.aws/` y rol del mismo nombre,
 que solo puede escribir sus propios registros. Para retirarla basta borrar esas dos piezas.
 
+Cada venta tiene un enlace de formulario (`/f/<código de 24 caracteres>`), que es lo único que lo
+protege: el cliente escribe su correo, sube cédula, título y notas y acepta los términos. Los
+archivos van directo del navegador al depósito privado `apostillas-demo-documentos-146736797821`
+(cifrado, sin acceso público, solo HTTPS, se borran a los 30 días) con direcciones firmadas de
+diez minutos; en la plataforma se ven con direcciones de cinco minutos. Lo enviado por chat y
+por formulario se suma en el mismo registro. Los documentos del formulario todavía no se leen
+con IA: eso requiere una llave de Anthropic en este programa.
+
 Variables de la Lambda (ninguna va en el repositorio): `USUARIO`, `CLAVE_HASH` (`sal:hash`
 scrypt en hexadecimal), `SECRETO_SESION`, `KAPSO_URL`, `KAPSO_CLAVE`.
 

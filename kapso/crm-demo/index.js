@@ -18,13 +18,15 @@ const REGISTRO = { PENDIENTE: 'Pendiente', FALTAN: 'Faltan documentos', COMPLETO
 // Etapas que la asesora marca a mano una vez el pago esta confirmado y el registro completo.
 const ETAPAS_MANUALES = ['Radicado en el MEN', 'Enviado', 'Apostillado'];
 const DOCUMENTOS_OBLIGATORIOS = ['titulo', 'notas', 'cedula'];
+// Direccion publica de la pantalla; el formulario de cada venta es esta direccion mas su codigo.
+const ENLACE_FORMULARIO = 'https://y5b7snu3g3rvlebookdtwtagiq0yjksw.lambda-url.us-east-1.on.aws/f/';
 const MAXIMO_TEXTO = 500;
 const MAXIMO_LISTA = 200;
 const DIGITOS_PARA_COMPARAR = 10;
 const TABLA = `CREATE TABLE IF NOT EXISTS demo_ventas (
   id TEXT PRIMARY KEY, creada TEXT NOT NULL, actualizada TEXT NOT NULL, cliente TEXT, telefono TEXT NOT NULL,
   servicio TEXT NOT NULL, valor INTEGER NOT NULL, asesora TEXT NOT NULL, estado_pago TEXT NOT NULL,
-  estado_registro TEXT NOT NULL, pago TEXT, registro TEXT, historial TEXT NOT NULL, etapa_manual TEXT)`;
+  estado_registro TEXT NOT NULL, pago TEXT, registro TEXT, historial TEXT NOT NULL, etapa_manual TEXT, codigo TEXT)`;
 
 class ErrorDeUso extends Error {}
 
@@ -98,6 +100,24 @@ function diaLocal(fecha) {
   return new Intl.DateTimeFormat('en-US', { timeZone: ZONA_HORARIA, weekday: 'short' }).format(fecha);
 }
 
+/** Codigo del enlace del formulario: imposible de adivinar, porque es lo unico que lo protege. */
+function nuevoCodigo() {
+  const bytes = crypto.getRandomValues(new Uint8Array(12));
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function estaVacio(valor) {
+  return valor === '' || valor === null || valor === undefined || (Array.isArray(valor) && valor.length === 0);
+}
+
+/** Une lo ya registrado con lo nuevo sin borrar datos: el chat y el formulario se complementan. */
+function unirRegistro(anterior, nuevo) {
+  const unido = { ...(anterior || {}) };
+  for (const [clave, valor] of Object.entries(nuevo)) if (!estaVacio(valor)) unido[clave] = valor;
+  const recibidos = [...(anterior?.documentos_recibidos || []), ...(nuevo.documentos_recibidos || [])].map((nombre) => nombre.toLowerCase());
+  return { ...unido, documentos_recibidos: [...new Set(recibidos)] };
+}
+
 function lista(valor) {
   const elementos = Array.isArray(valor) ? valor : texto(valor).split(',');
   return elementos.map(texto).filter(Boolean).slice(0, 20);
@@ -113,7 +133,7 @@ function telefonoDelChat(cuerpo) {
 
 function aVenta(fila) {
   const venta = { ...fila, pago: fila.pago ? JSON.parse(fila.pago) : null, registro: fila.registro ? JSON.parse(fila.registro) : null, historial: JSON.parse(fila.historial) };
-  return { ...venta, etapa: etapaDe(venta) };
+  return { ...venta, etapa: etapaDe(venta), enlace: fila.codigo ? ENLACE_FORMULARIO + fila.codigo : null };
 }
 
 function conHistorial(venta, ahora, hecho) {
@@ -128,6 +148,13 @@ async function todas(env) {
 async function porId(env, id) {
   const fila = await env.DB.prepare('SELECT * FROM demo_ventas WHERE id = ?').bind(texto(id)).first();
   if (!fila) throw new ErrorDeUso('No existe esa venta');
+  return aVenta(fila);
+}
+
+async function porCodigo(env, codigo) {
+  const limpio = texto(codigo);
+  const fila = /^[0-9a-f]{24}$/.test(limpio) ? await env.DB.prepare('SELECT * FROM demo_ventas WHERE codigo = ?').bind(limpio).first() : null;
+  if (!fila) throw new ErrorDeUso('Este enlace no es valido');
   return aVenta(fila);
 }
 
@@ -163,12 +190,12 @@ async function crearVenta(env, datos, ahora) {
   const venta = {
     id: crypto.randomUUID(), creada: ahora, actualizada: ahora, cliente: texto(datos.cliente), telefono, servicio, valor, asesora,
     estado_pago: PAGO.SIN_SOPORTE, estado_registro: REGISTRO.PENDIENTE, pago: null, registro: null, etapa_manual: null,
-    etapa: 'Pendiente de pago', historial: [{ fecha: ahora, hecho: `Venta creada y asignada a ${asesora}` }],
+    codigo: nuevoCodigo(), etapa: 'Pendiente de pago', historial: [{ fecha: ahora, hecho: `Venta creada y asignada a ${asesora}` }],
   };
-  await env.DB.prepare('INSERT INTO demo_ventas (id, creada, actualizada, cliente, telefono, servicio, valor, asesora, estado_pago, estado_registro, pago, registro, historial) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    .bind(venta.id, venta.creada, venta.actualizada, venta.cliente, venta.telefono, venta.servicio, venta.valor, venta.asesora, venta.estado_pago, venta.estado_registro, null, null, JSON.stringify(venta.historial))
+  await env.DB.prepare('INSERT INTO demo_ventas (id, creada, actualizada, cliente, telefono, servicio, valor, asesora, estado_pago, estado_registro, pago, registro, historial, codigo) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(venta.id, venta.creada, venta.actualizada, venta.cliente, venta.telefono, venta.servicio, venta.valor, venta.asesora, venta.estado_pago, venta.estado_registro, null, null, JSON.stringify(venta.historial), venta.codigo)
     .run();
-  return venta;
+  return { ...venta, enlace: ENLACE_FORMULARIO + venta.codigo };
 }
 
 async function guardarPago(env, venta, datos, ahora) {
@@ -185,19 +212,46 @@ async function guardarPago(env, venta, datos, ahora) {
 }
 
 async function guardarRegistro(env, venta, datos, ahora) {
-  const recibidos = lista(datos.documentos_recibidos);
   const correo = texto(datos.correo).toLowerCase();
   if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) throw new ErrorDeUso('El correo no tiene un formato valido');
-  const { estado, faltantes } = estadoDelRegistro(recibidos, correo);
-  const registro = {
+  const registro = unirRegistro(venta.registro, {
     nombre: texto(datos.nombre), cedula: soloDigitos(datos.cedula), fecha_nacimiento: texto(datos.fecha_nacimiento), universidad: texto(datos.universidad),
     titulo: texto(datos.titulo), fecha_grado: texto(datos.fecha_grado), codigo_verificacion: texto(datos.codigo_verificacion), correo,
-    documentos_recibidos: recibidos, documentos_faltantes: faltantes, legibilidad: texto(datos.legibilidad), diferencias: texto(datos.diferencias),
+    documentos_recibidos: lista(datos.documentos_recibidos), legibilidad: texto(datos.legibilidad), diferencias: texto(datos.diferencias),
     archivos: lista(datos.archivos), recibido: ahora,
-  };
-  const cambios = { registro, estado_registro: estado, cliente: registro.nombre || venta.cliente };
-  const nueva = await guardar(env, venta, cambios, ahora, estado === REGISTRO.COMPLETO ? 'Registro completo' : `Registro con faltantes: ${faltantes.join(', ')}`);
+  });
+  return cerrarRegistro(env, venta, registro, ahora, 'por WhatsApp');
+}
+
+async function cerrarRegistro(env, venta, registro, ahora, origen) {
+  const { estado, faltantes } = estadoDelRegistro(registro.documentos_recibidos, registro.correo);
+  const completo = { ...registro, documentos_faltantes: faltantes };
+  const cambios = { registro: completo, estado_registro: estado, cliente: completo.nombre || venta.cliente };
+  const hecho = estado === REGISTRO.COMPLETO ? `Registro completo (${origen})` : `Registro ${origen} con faltantes: ${faltantes.join(', ')}`;
+  const nueva = await guardar(env, venta, cambios, ahora, hecho);
   return { venta: nueva, estado, faltantes };
+}
+
+/** Lo minimo que ve quien abre el enlace: nada de valores, telefonos ni datos ya registrados. */
+async function verFormulario(env, datos) {
+  const venta = await porCodigo(env, datos.codigo);
+  return { ok: true, id: venta.id, servicio: venta.servicio, enviado: Boolean(venta.registro?.archivos_formulario) };
+}
+
+async function enviarFormulario(env, datos, ahora) {
+  const venta = await porCodigo(env, datos.codigo);
+  const correo = texto(datos.correo).toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) throw new ErrorDeUso('Escribe un correo valido');
+  if (datos.acepta !== true) throw new ErrorDeUso('Debes aceptar los terminos y la politica de privacidad');
+  const archivos = {};
+  for (const documento of DOCUMENTOS_OBLIGATORIOS) {
+    const ruta = texto(datos.archivos?.[documento]);
+    if (!ruta.startsWith(`ventas/${venta.id}/${documento}-`)) throw new ErrorDeUso(`Falta el documento: ${documento}`);
+    archivos[documento] = ruta;
+  }
+  const registro = unirRegistro(venta.registro, { correo, documentos_recibidos: DOCUMENTOS_OBLIGATORIOS, archivos_formulario: archivos, acepto_terminos: ahora, recibido: ahora });
+  const { estado } = await cerrarRegistro(env, venta, registro, ahora, 'por formulario');
+  return { ok: true, estado };
 }
 
 async function confirmarPago(env, datos, ahora) {
@@ -221,7 +275,7 @@ async function cambiarEtapa(env, datos, ahora) {
 /** Lo que el agente puede saber de una venta: nada de datos de otros clientes. */
 function paraElAgente(venta) {
   if (!venta) return { encontrada: false };
-  return { encontrada: true, etapa: venta.etapa, servicio: venta.servicio, valor_esperado: venta.valor, asesora: venta.asesora, estado_pago: venta.estado_pago, estado_registro: venta.estado_registro };
+  return { encontrada: true, etapa: venta.etapa, enlace_formulario: venta.enlace, servicio: venta.servicio, valor_esperado: venta.valor, asesora: venta.asesora, estado_pago: venta.estado_pago, estado_registro: venta.estado_registro };
 }
 
 async function comoHerramienta(env, cuerpo, ahora) {
@@ -243,6 +297,8 @@ async function comoHerramienta(env, cuerpo, ahora) {
 async function comoPanel(env, cuerpo, ahora) {
   switch (cuerpo.accion) {
     case 'listar': return { ok: true, ventas: await todas(env), asesoras: [...TITULARES, REEMPLAZO], etapas: ETAPAS_MANUALES };
+    case 'formulario_ver': return verFormulario(env, cuerpo);
+    case 'formulario_enviar': return enviarFormulario(env, cuerpo, ahora);
     case 'cambiar_etapa': return { ok: true, venta: await cambiarEtapa(env, cuerpo, ahora) };
     case 'crear_venta': return { ok: true, venta: await crearVenta(env, cuerpo, ahora) };
     case 'ver': return { ok: true, venta: await porId(env, cuerpo.id) };
@@ -271,6 +327,8 @@ async function handler(request, env) {
     await env.DB.prepare(TABLA).run();
     // Las tablas creadas antes de que existieran las etapas no tienen la columna; si ya esta, la orden falla y se ignora.
     await env.DB.prepare('ALTER TABLE demo_ventas ADD COLUMN etapa_manual TEXT').run().catch(() => undefined);
+    await env.DB.prepare('ALTER TABLE demo_ventas ADD COLUMN codigo TEXT').run().catch(() => undefined);
+    await env.DB.prepare('UPDATE demo_ventas SET codigo = lower(hex(randomblob(12))) WHERE codigo IS NULL').run();
     const esHerramienta = cuerpo.input && typeof cuerpo.input === 'object';
     if (esHerramienta && esPublica) throw new ErrorDeUso('Accion desconocida');
     return json(esHerramienta ? await comoHerramienta(env, cuerpo, ahora) : await comoPanel(env, cuerpo, ahora));

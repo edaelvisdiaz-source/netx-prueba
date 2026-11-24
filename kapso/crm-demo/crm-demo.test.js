@@ -13,11 +13,12 @@ const { handler, leerValor, compararPago, mismoTelefono, estadoDelRegistro, eleg
 /** Base de datos y almacen en memoria con la misma forma que usa la funcion. */
 function entornoDePrueba(secretos = {}) {
   const filas = new Map();
-  const columnas = ['id', 'creada', 'actualizada', 'cliente', 'telefono', 'servicio', 'valor', 'asesora', 'estado_pago', 'estado_registro', 'pago', 'registro', 'historial'];
+  const columnas = ['id', 'creada', 'actualizada', 'cliente', 'telefono', 'servicio', 'valor', 'asesora', 'estado_pago', 'estado_registro', 'pago', 'registro', 'historial', 'codigo'];
   const sentencia = (sql, valores = []) => ({
     bind: (...nuevos) => sentencia(sql, nuevos),
     run: async () => {
       if (sql.startsWith('INSERT')) filas.set(valores[0], Object.fromEntries(columnas.map((columna, i) => [columna, valores[i]])));
+      if (sql.startsWith('UPDATE demo_ventas SET codigo')) return;
       if (sql.startsWith('UPDATE')) {
         const [actualizada, cliente, estado_pago, estado_registro, pago, registro, historial, etapa_manual, id] = valores;
         filas.set(id, { ...filas.get(id), actualizada, cliente, estado_pago, estado_registro, pago, registro, historial, etapa_manual });
@@ -26,7 +27,7 @@ function entornoDePrueba(secretos = {}) {
       if (sql.startsWith('DELETE')) filas.delete(valores[0]);
     },
     all: async () => ({ results: [...filas.values()].sort((a, b) => b.creada.localeCompare(a.creada)) }),
-    first: async () => filas.get(valores[0]) || null,
+    first: async () => (sql.includes('WHERE codigo') ? [...filas.values()].find((fila) => fila.codigo === valores[0]) : filas.get(valores[0])) || null,
   });
   const kv = new Map();
   return { DB: { prepare: (sql) => sentencia(sql.trim()) }, KV: { get: async (k) => kv.get(k) ?? null, put: async (k, v) => kv.set(k, v) }, ...secretos };
@@ -165,4 +166,35 @@ test('la etapa del cliente avanza con el pago, el registro y lo que marca la ase
   assert.equal((await llamar(env, { accion: 'ver', id: venta.id })).venta.etapa, 'Listo para radicar');
   assert.equal((await llamar(env, { accion: 'cambiar_etapa', id: venta.id, etapa: 'Radicado en el MEN' })).venta.etapa, 'Radicado en el MEN');
   assert.equal((await llamar(env, { accion: 'cambiar_etapa', id: venta.id, etapa: 'Inventada' })).ok, false);
+});
+
+test('el formulario web registra correo y documentos sin exponer datos de la venta', async () => {
+  const env = entornoDePrueba();
+  const { venta } = await llamar(env, VENTA);
+  assert.match(venta.enlace, /\/f\/[0-9a-f]{24}$/);
+  const codigo = venta.enlace.split('/f/')[1];
+  const vista = await llamar(env, { accion: 'formulario_ver', codigo });
+  assert.deepEqual(Object.keys(vista).sort(), ['enviado', 'estado', 'id', 'ok', 'servicio']);
+  assert.equal((await llamar(env, { accion: 'formulario_ver', codigo: 'a'.repeat(24) })).ok, false);
+
+  const archivos = { titulo: `ventas/${venta.id}/titulo-1.pdf`, notas: `ventas/${venta.id}/notas-1.pdf`, cedula: `ventas/${venta.id}/cedula-1.pdf` };
+  assert.equal((await llamar(env, { accion: 'formulario_enviar', codigo, correo: 'a@b.co', acepta: false, archivos })).ok, false);
+  assert.equal((await llamar(env, { accion: 'formulario_enviar', codigo, correo: 'a@b.co', acepta: true, archivos: { ...archivos, cedula: 'ventas/otra/cedula-1.pdf' } })).ok, false);
+  const enviado = await llamar(env, { accion: 'formulario_enviar', codigo, correo: 'A@B.co', acepta: true, archivos });
+  assert.equal(enviado.estado, 'Completo');
+  assert.equal((await llamar(env, { accion: 'formulario_ver', codigo })).enviado, true);
+});
+
+test('lo que llega por chat y por formulario se suma sin borrarse', async () => {
+  const env = entornoDePrueba();
+  const { venta } = await llamar(env, VENTA);
+  const codigo = venta.enlace.split('/f/')[1];
+  const archivos = { titulo: `ventas/${venta.id}/titulo-1.pdf`, notas: `ventas/${venta.id}/notas-1.pdf`, cedula: `ventas/${venta.id}/cedula-1.pdf` };
+  await llamar(env, { accion: 'formulario_enviar', codigo, correo: 'a@b.co', acepta: true, archivos });
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_registro', nombre: 'Felipe Roldan', cedula: '1116156739', documentos_recibidos: 'cedula' }));
+  const { venta: final } = await llamar(env, { accion: 'ver', id: venta.id });
+  assert.equal(final.registro.correo, 'a@b.co');
+  assert.equal(final.registro.nombre, 'Felipe Roldan');
+  assert.equal(final.registro.archivos_formulario.titulo, archivos.titulo);
+  assert.equal(final.estado_registro, 'Completo');
 });

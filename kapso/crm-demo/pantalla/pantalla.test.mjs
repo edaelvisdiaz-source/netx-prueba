@@ -11,6 +11,8 @@ const ENV = {
   SECRETO_SESION: 'secreto-de-prueba',
   KAPSO_URL: 'https://kapso.invalid/invoke',
   KAPSO_CLAVE: 'clave-kapso',
+  DOCUMENTOS_BUCKET: 'deposito-demo',
+  AWS_REGION: 'us-east-1',
 };
 const AHORA = 1_800_000_000_000;
 
@@ -95,4 +97,70 @@ test('bloquea tras varios intentos fallidos', async () => {
   assert.equal(ultima.statusCode, 429);
   const despues = await atender(evento('/api/entrar', { usuario: 'demo', clave: 'clave-buena' }), ENV, AHORA + 100_000 + 16 * 60_000);
   assert.equal(despues.statusCode, 200);
+});
+
+const CODIGO = 'ab'.repeat(12);
+function almacenDePrueba(tamanos = {}) {
+  return {
+    direccionParaSubir: async (ruta, tipo) => `https://deposito.invalid/${ruta}?tipo=${tipo}`,
+    direccionParaVer: async (ruta) => `https://deposito.invalid/${ruta}?ver`,
+    tamano: async (ruta) => (ruta in tamanos ? tamanos[ruta] : 1000),
+  };
+}
+function sistemaDePrueba(t, respuestas) {
+  const llamadas = [];
+  t.mock.method(globalThis, 'fetch', async (url, opciones) => {
+    const cuerpo = JSON.parse(opciones.body);
+    llamadas.push(cuerpo);
+    return new Response(JSON.stringify(respuestas[cuerpo.accion] ?? { ok: false, error: 'sin respuesta' }), { headers: { 'Content-Type': 'application/json' } });
+  });
+  return llamadas;
+}
+
+test('el formulario se entrega en su enlace y puede subir al almacenamiento', async () => {
+  const respuesta = await atender(evento(`/f/${CODIGO}`), ENV, AHORA);
+  assert.equal(respuesta.statusCode, 200);
+  assert.match(respuesta.headers['Content-Security-Policy'], /connect-src 'self' https:\/\/deposito-demo\.s3\.us-east-1\.amazonaws\.com/);
+  assert.equal((await atender(evento('/f/no-es-un-codigo'), ENV, AHORA)).statusCode, 404);
+});
+
+test('el formulario no revela el identificador ni datos de la venta', async (t) => {
+  sistemaDePrueba(t, { formulario_ver: { ok: true, id: 'venta-1', servicio: 'Apostilla', enviado: false } });
+  const respuesta = await atender(evento('/api/formulario/ver', { codigo: CODIGO }), ENV, AHORA);
+  assert.deepEqual(JSON.parse(respuesta.body), { ok: true, servicio: 'Apostilla', enviado: false });
+});
+
+test('solo autoriza subir documentos validos y a la carpeta de esa venta', async (t) => {
+  sistemaDePrueba(t, { formulario_ver: { ok: true, id: 'venta-1', servicio: 'Apostilla', enviado: false } });
+  const pedir = (datos) => atender(evento('/api/formulario/subir', { codigo: CODIGO, ...datos }), ENV, AHORA, almacenDePrueba());
+  assert.equal((await pedir({ documento: 'otro', tipo: 'application/pdf', tamano: 10 })).statusCode, 400);
+  assert.equal((await pedir({ documento: 'cedula', tipo: 'text/html', tamano: 10 })).statusCode, 400);
+  assert.equal((await pedir({ documento: 'cedula', tipo: 'application/pdf', tamano: 16 * 1024 * 1024 })).statusCode, 400);
+  const buena = JSON.parse((await pedir({ documento: 'cedula', tipo: 'application/pdf', tamano: 5000 })).body);
+  assert.match(buena.ruta, /^ventas\/venta-1\/cedula-[0-9a-f]{16}\.pdf$/);
+});
+
+test('al enviar verifica que los tres archivos llegaron y son de esa venta', async (t) => {
+  const llamadas = sistemaDePrueba(t, { formulario_ver: { ok: true, id: 'venta-1', servicio: 'Apostilla', enviado: false }, formulario_enviar: { ok: true, estado: 'Completo' } });
+  const archivos = { cedula: 'ventas/venta-1/cedula-a.pdf', titulo: 'ventas/venta-1/titulo-a.pdf', notas: 'ventas/venta-1/notas-a.pdf' };
+  const enviar = (misArchivos, almacen) => atender(evento('/api/formulario/enviar', { codigo: CODIGO, correo: 'a@b.co', acepta: true, archivos: misArchivos }), ENV, AHORA, almacen);
+  const ajeno = JSON.parse((await enviar({ ...archivos, notas: 'ventas/venta-2/notas-a.pdf' }, almacenDePrueba())).body);
+  assert.equal(ajeno.ok, false);
+  const sinSubir = JSON.parse((await enviar(archivos, almacenDePrueba({ 'ventas/venta-1/titulo-a.pdf': null }))).body);
+  assert.equal(sinSubir.ok, false);
+  const pesado = JSON.parse((await enviar(archivos, almacenDePrueba({ 'ventas/venta-1/titulo-a.pdf': 20 * 1024 * 1024 }))).body);
+  assert.equal(pesado.ok, false);
+  assert.equal(llamadas.filter((llamada) => llamada.accion === 'formulario_enviar').length, 0);
+  const bien = JSON.parse((await enviar(archivos, almacenDePrueba())).body);
+  assert.deepEqual(bien, { ok: true });
+});
+
+test('los documentos solo se pueden ver con sesion', async (t) => {
+  sistemaDePrueba(t, { ver: { ok: true, venta: { registro: { archivos_formulario: { cedula: 'ventas/venta-1/cedula-a.pdf' } } } } });
+  const sinSesion = await atender(evento('/api/documento', { id: 'venta-1', documento: 'cedula' }), ENV, AHORA, almacenDePrueba());
+  assert.equal(sinSesion.statusCode, 401);
+  const conSesion = JSON.parse((await atender(evento('/api/documento', { id: 'venta-1', documento: 'cedula' }, { cookie: sesion() }), ENV, AHORA, almacenDePrueba())).body);
+  assert.match(conSesion.direccion, /cedula-a\.pdf\?ver$/);
+  const inexistente = JSON.parse((await atender(evento('/api/documento', { id: 'venta-1', documento: 'notas' }, { cookie: sesion() }), ENV, AHORA, almacenDePrueba())).body);
+  assert.equal(inexistente.ok, false);
 });
