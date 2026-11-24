@@ -20,8 +20,8 @@ function entornoDePrueba(secretos = {}) {
       if (sql.startsWith('INSERT')) filas.set(valores[0], Object.fromEntries(columnas.map((columna, i) => [columna, valores[i]])));
       if (sql.startsWith('UPDATE demo_ventas SET codigo')) return;
       if (sql.startsWith('UPDATE')) {
-        const [servicio, valor, moneda, tasa, actualizada, cliente, estado_pago, estado_registro, pago, registro, historial, etapa_manual, id] = valores;
-        filas.set(id, { ...filas.get(id), servicio, valor, moneda, tasa, actualizada, cliente, estado_pago, estado_registro, pago, registro, historial, etapa_manual });
+        const [servicio, valor, moneda, tasa, actualizada, cliente, estado_pago, estado_registro, pago, registro, historial, etapa_manual, codigo_cliente, id] = valores;
+        filas.set(id, { ...filas.get(id), servicio, valor, moneda, tasa, actualizada, cliente, estado_pago, estado_registro, pago, registro, historial, etapa_manual, codigo_cliente });
       }
       if (sql.startsWith('ALTER')) throw new Error('duplicate column name');
       if (sql.startsWith('DELETE')) filas.delete(valores[0]);
@@ -357,4 +357,28 @@ test('el cliente autoriza el tratamiento de datos sobre el resumen de su tramite
   assert.equal(final.registro.nombre, 'Bertha Rivera');
   assert.equal((await llamar(env, { accion: 'formulario_aceptar', codigo, acepta: true })).fecha, aceptada.fecha);
   assert.equal((await llamar(env, desdeElChat('573001234567', { accion: 'consultar_venta' }))).enlace_autorizacion, undefined);
+});
+
+test('al confirmar el primer pago el prospecto pasa a cliente con codigo y se ve su saldo', async () => {
+  const env = entornoDePrueba();
+  const { venta } = await llamar(env, { ...VENTA, valor: '450.000' });
+  assert.equal((await llamar(env, { accion: 'ver', id: venta.id })).venta.tipo, 'Prospecto');
+  assert.equal((await llamar(env, { accion: 'ver', id: venta.id })).venta.saldo, 450000);
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_registro', documentos_recibidos: 'titulo, notas, cedula', correo: 'a@b.co' }));
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '120.000', moneda: 'COP' }));
+  const confirmada = (await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true })).venta;
+  assert.equal(confirmada.tipo, 'Cliente');
+  assert.equal(confirmada.codigo_cliente, 'CL-0001');
+  assert.equal(confirmada.saldo, 330000);
+  assert.equal(confirmada.etapa, 'Saldo pendiente');
+  assert.match(confirmada.historial.at(-1).hecho, /CL-0001.*Saldo pendiente: 330000 COP/);
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '330.000', moneda: 'COP' }));
+  const final = (await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true })).venta;
+  assert.equal(final.codigo_cliente, 'CL-0001');
+  assert.equal(final.saldo, 0);
+  assert.equal(final.etapa, 'Listo para radicar');
+  const otra = (await llamar(env, { ...VENTA, telefono: '573009998877' })).venta;
+  await llamar(env, desdeElChat('573009998877', { accion: 'guardar_pago', valor: '1.250.000' }));
+  assert.equal((await llamar(env, { accion: 'confirmar_pago', id: otra.id, confirmado: true })).venta.codigo_cliente, 'CL-0002');
+  assert.equal((await llamar(env, { accion: 'confirmar_pago', id: otra.id, confirmado: false })).venta.codigo_cliente, 'CL-0002');
 });

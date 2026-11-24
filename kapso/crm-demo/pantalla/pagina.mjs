@@ -162,6 +162,9 @@ function resumen() {
     ['Pagos por confirmar', cuenta((v) => v.estado_pago === 'Por confirmar')],
     ['Por cotizar', cuenta((v) => v.etapa.startsWith('Por cotizar'))],
     ['Faltan documentos', cuenta((v) => v.estado_registro === 'Faltan documentos')],
+    ['Clientes', cuenta((v) => v.tipo === 'Cliente')],
+    ['Prospectos', cuenta((v) => v.tipo !== 'Cliente')],
+    ['Con saldo pendiente', cuenta((v) => v.tipo === 'Cliente' && v.saldo > 0)],
     ['Listos para radicar', cuenta((v) => v.etapa === 'Listo para radicar')],
   ];
   return h('div', { clase: 'resumen' }, cajas.map(([nombre, numero]) => h('div', null, h('b', null, numero), h('span', null, nombre))));
@@ -178,7 +181,7 @@ function listado() {
     h('div', { clase: 'barra' }, buscar, filtro),
     h('table', null, h('thead', null, h('tr', null,
       h('th', null, 'Cliente'), h('th', null, 'Etapa'), h('th', { clase: 'ocultar-movil' }, 'Servicio'),
-      h('th', null, 'Valor'), h('th', { clase: 'ocultar-movil' }, 'Asesora'), h('th', { clase: 'ocultar-movil' }, 'Actualizada'))), cuerpo));
+      h('th', null, 'Valor'), h('th', null, 'Saldo pendiente'), h('th', { clase: 'ocultar-movil' }, 'Asesora'), h('th', { clase: 'ocultar-movil' }, 'Actualizada'))), cuerpo));
   setTimeout(pintarFilas, 0);
   return tabla;
 }
@@ -190,14 +193,16 @@ function pintarFilas() {
   const visibles = estado.ventas.filter((v) => (!estado.filtro || v.etapa === estado.filtro)
     && (!texto || [v.cliente, v.telefono, v.registro && v.registro.cedula].some((campo) => String(campo || '').toLowerCase().includes(texto))));
   if (!visibles.length) {
-    return cuerpo.replaceChildren(h('tr', null, h('td', { colspan: 6, clase: 'suave' },
+    return cuerpo.replaceChildren(h('tr', null, h('td', { colspan: 7, clase: 'suave' },
       estado.ventas.length ? 'Ninguna venta coincide con la búsqueda.' : 'Aún no hay ventas. Crea la primera con «+ Nueva venta».')));
   }
   cuerpo.replaceChildren(...visibles.map((v) => h('tr', { clase: 'fila', tabindex: 0, alClick: () => { estado.abierta = v.id; pintar(); },
     alKeydown: (e) => { if (e.key === 'Enter') { estado.abierta = v.id; pintar(); } } },
-    h('td', null, h('div', null, v.cliente || 'Sin nombre todavía'), h('div', { clase: 'suave' }, '+' + v.telefono)),
+    h('td', null, h('div', null, v.cliente || 'Sin nombre todavía'), h('div', { clase: 'suave' }, '+' + v.telefono),
+      etiqueta(v.tipo === 'Cliente' ? 'Cliente ' + v.codigo_cliente : 'Prospecto', v.tipo === 'Cliente' ? 'azul' : '')),
     h('td', null, etiqueta(v.etapa, claseDeEtapa(v.etapa))),
     h('td', { clase: 'ocultar-movil' }, v.servicio), h('td', null, v.valor > 0 ? pesos(v.valor, v.moneda) : '—'),
+    h('td', null, v.saldo === null || v.saldo === undefined ? '—' : etiqueta(pesos(v.saldo, v.moneda), v.saldo > 0 ? 'alerta' : 'ok')),
     h('td', { clase: 'ocultar-movil' }, v.asesora), h('td', { clase: 'ocultar-movil suave' }, fecha(v.actualizada)))));
 }
 
@@ -224,7 +229,10 @@ function detalle(v) {
       h('h2', null, v.cliente || 'Sin nombre todavía'), etiqueta(v.etapa, claseDeEtapa(v.etapa))),
     h('div', { clase: 'dos' },
       h('div', { clase: 'tarjeta' }, h('h2', null, 'Venta'),
-        campos([['WhatsApp', '+' + v.telefono], ['Servicio', v.servicio], ['Valor', v.valor > 0 ? pesos(v.valor, v.moneda) : 'Sin cotizar'], ['Tasa de cambio', v.tasa ? pesos(v.tasa) + ' por euro' : ''], ['Asesora', v.asesora], ['Creada', fecha(v.creada)]]),
+        campos([['Tipo', etiqueta(v.tipo === 'Cliente' ? 'Cliente' : 'Prospecto', v.tipo === 'Cliente' ? 'azul' : '')], ['Código de cliente', v.codigo_cliente],
+          ['WhatsApp', '+' + v.telefono], ['Servicio', v.servicio], ['Valor', v.valor > 0 ? pesos(v.valor, v.moneda) : 'Sin cotizar'],
+          ['Total pagado', v.pago && v.pago.pagos ? pesos(v.pago.pagado, v.moneda) : ''],
+          ['Saldo pendiente', v.saldo === null || v.saldo === undefined ? '' : etiqueta(pesos(v.saldo, v.moneda), v.saldo > 0 ? 'alerta' : 'ok')], ['Tasa de cambio', v.tasa ? pesos(v.tasa) + ' por euro' : ''], ['Asesora', v.asesora], ['Creada', fecha(v.creada)]]),
         v.estado_pago === 'Sin soporte' && h('div', { clase: 'acciones' }, h('button', { clase: v.valor > 0 ? '' : 'primario', alClick: () => abrirNuevaVenta(v) }, v.valor > 0 ? 'Cambiar cotización' : 'Cotizar')),
         v.enlace && [h('label', null, 'Enlace de autorización de datos para el cliente'),
           h('div', { clase: 'barra' }, h('input', { readonly: true, value: v.enlace, 'aria-label': 'Enlace del formulario', alFocus: (e) => e.target.select() }),

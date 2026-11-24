@@ -29,7 +29,7 @@ const DIGITOS_PARA_COMPARAR = 10;
 const TABLA = `CREATE TABLE IF NOT EXISTS demo_ventas (
   id TEXT PRIMARY KEY, creada TEXT NOT NULL, actualizada TEXT NOT NULL, cliente TEXT, telefono TEXT NOT NULL,
   servicio TEXT NOT NULL, valor INTEGER NOT NULL, asesora TEXT NOT NULL, estado_pago TEXT NOT NULL,
-  estado_registro TEXT NOT NULL, pago TEXT, registro TEXT, historial TEXT NOT NULL, etapa_manual TEXT, codigo TEXT, moneda TEXT, tasa REAL)`;
+  estado_registro TEXT NOT NULL, pago TEXT, registro TEXT, historial TEXT NOT NULL, etapa_manual TEXT, codigo TEXT, moneda TEXT, tasa REAL, codigo_cliente TEXT)`;
 
 class ErrorDeUso extends Error {}
 
@@ -121,6 +121,12 @@ function etapaDe(venta) {
   return venta.etapa_manual || 'Listo para radicar';
 }
 
+/** Lo que le falta por pagar al cliente, en la moneda de la venta; null si aun no hay cotizacion. */
+function saldoDe(venta) {
+  if (!(venta.valor > 0)) return null;
+  return venta.pago?.saldo ?? venta.valor;
+}
+
 function elegirAsesora(diaDeLaSemana, turno) {
   if (diaDeLaSemana === DIA_DEL_REEMPLAZO) return { asesora: REEMPLAZO, turno };
   return { asesora: TITULARES[turno % TITULARES.length], turno: turno + 1 };
@@ -163,7 +169,8 @@ function telefonoDelChat(cuerpo) {
 
 function aVenta(fila) {
   const venta = { ...fila, pago: fila.pago ? JSON.parse(fila.pago) : null, registro: fila.registro ? JSON.parse(fila.registro) : null, historial: JSON.parse(fila.historial) };
-  return { ...venta, etapa: etapaDe(venta), enlace: fila.codigo ? ENLACE_FORMULARIO + fila.codigo : null };
+  // Es cliente desde que Contabilidad le confirma el primer pago; antes es un prospecto.
+  return { ...venta, tipo: fila.codigo_cliente ? 'Cliente' : 'Prospecto', saldo: saldoDe(venta), etapa: etapaDe(venta), enlace: fila.codigo ? ENLACE_FORMULARIO + fila.codigo : null };
 }
 
 function conHistorial(venta, ahora, hecho) {
@@ -196,9 +203,9 @@ async function porTelefono(env, telefono) {
 async function guardar(env, venta, cambios, ahora, hecho) {
   const cambiada = { ...venta, ...cambios, actualizada: ahora, historial: conHistorial(venta, ahora, hecho) };
   const nueva = { ...cambiada, etapa: etapaDe(cambiada) };
-  await env.DB.prepare('UPDATE demo_ventas SET servicio = ?, valor = ?, moneda = ?, tasa = ?, actualizada = ?, cliente = ?, estado_pago = ?, estado_registro = ?, pago = ?, registro = ?, historial = ?, etapa_manual = ? WHERE id = ?')
+  await env.DB.prepare('UPDATE demo_ventas SET servicio = ?, valor = ?, moneda = ?, tasa = ?, actualizada = ?, cliente = ?, estado_pago = ?, estado_registro = ?, pago = ?, registro = ?, historial = ?, etapa_manual = ?, codigo_cliente = ? WHERE id = ?')
     .bind(nueva.servicio, nueva.valor, nueva.moneda || 'COP', nueva.tasa || null, nueva.actualizada, nueva.cliente, nueva.estado_pago, nueva.estado_registro, nueva.pago ? JSON.stringify(nueva.pago) : null,
-      nueva.registro ? JSON.stringify(nueva.registro) : null, JSON.stringify(nueva.historial), nueva.etapa_manual || null, nueva.id)
+      nueva.registro ? JSON.stringify(nueva.registro) : null, JSON.stringify(nueva.historial), nueva.etapa_manual || null, nueva.codigo_cliente || null, nueva.id)
     .run();
   return nueva;
 }
@@ -400,12 +407,26 @@ async function enviarFormulario(env, datos, ahora) {
   return { ok: true, estado };
 }
 
+/** Codigo consecutivo de cliente: CL-0001, CL-0002... */
+async function siguienteCodigoDeCliente(env) {
+  const usados = (await todas(env)).map((venta) => Number(String(venta.codigo_cliente || '').replace(/\D/g, ''))).filter(Boolean);
+  return `CL-${String(Math.max(0, ...usados) + 1).padStart(4, '0')}`;
+}
+
 async function confirmarPago(env, datos, ahora) {
   const venta = await porId(env, datos.id);
   if (!venta.pago) throw new ErrorDeUso('Esta venta todavia no tiene soporte de pago');
   const estado = datos.confirmado ? PAGO.CONFIRMADO : PAGO.RECHAZADO;
   const nota = texto(datos.nota);
-  return guardar(env, venta, { estado_pago: estado }, ahora, `Contabilidad: pago ${estado.toLowerCase()}${nota ? ` (${nota})` : ''}`);
+  const cambios = { estado_pago: estado };
+  let hecho = `Contabilidad: pago ${estado.toLowerCase()}${nota ? ` (${nota})` : ''}`;
+  if (datos.confirmado && !venta.codigo_cliente) {
+    cambios.codigo_cliente = await siguienteCodigoDeCliente(env);
+    hecho += `. Pasa de prospecto a cliente con el código ${cambios.codigo_cliente}`;
+  }
+  if (datos.confirmado && venta.pago.saldo > 0) hecho += `. Saldo pendiente: ${venta.pago.saldo} ${venta.moneda || 'COP'}`;
+  const nueva = await guardar(env, venta, cambios, ahora, hecho);
+  return { ...nueva, tipo: nueva.codigo_cliente ? 'Cliente' : 'Prospecto', saldo: saldoDe(nueva) };
 }
 
 async function cambiarEtapa(env, datos, ahora) {
@@ -503,6 +524,7 @@ async function handler(request, env) {
     await env.DB.prepare('ALTER TABLE demo_ventas ADD COLUMN codigo TEXT').run().catch(() => undefined);
     await env.DB.prepare('ALTER TABLE demo_ventas ADD COLUMN moneda TEXT').run().catch(() => undefined);
     await env.DB.prepare('ALTER TABLE demo_ventas ADD COLUMN tasa REAL').run().catch(() => undefined);
+    await env.DB.prepare('ALTER TABLE demo_ventas ADD COLUMN codigo_cliente TEXT').run().catch(() => undefined);
     await env.DB.prepare('UPDATE demo_ventas SET codigo = lower(hex(randomblob(12))) WHERE codigo IS NULL').run();
     const esHerramienta = cuerpo.input && typeof cuerpo.input === 'object';
     if (esHerramienta && esPublica) throw new ErrorDeUso('Accion desconocida');
