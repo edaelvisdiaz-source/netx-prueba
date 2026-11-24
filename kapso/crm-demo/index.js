@@ -15,6 +15,8 @@ const DIA_DEL_REEMPLAZO = 'Sat';
 const ZONA_HORARIA = 'America/Bogota';
 const PAGO = { SIN_SOPORTE: 'Sin soporte', POR_CONFIRMAR: 'Por confirmar', CONFIRMADO: 'Confirmado', RECHAZADO: 'Rechazado' };
 const REGISTRO = { PENDIENTE: 'Pendiente', FALTAN: 'Faltan documentos', COMPLETO: 'Completo' };
+// Etapas que la asesora marca a mano una vez el pago esta confirmado y el registro completo.
+const ETAPAS_MANUALES = ['Radicado en el MEN', 'Enviado', 'Apostillado'];
 const DOCUMENTOS_OBLIGATORIOS = ['titulo', 'notas', 'cedula'];
 const MAXIMO_TEXTO = 500;
 const MAXIMO_LISTA = 200;
@@ -22,7 +24,7 @@ const DIGITOS_PARA_COMPARAR = 10;
 const TABLA = `CREATE TABLE IF NOT EXISTS demo_ventas (
   id TEXT PRIMARY KEY, creada TEXT NOT NULL, actualizada TEXT NOT NULL, cliente TEXT, telefono TEXT NOT NULL,
   servicio TEXT NOT NULL, valor INTEGER NOT NULL, asesora TEXT NOT NULL, estado_pago TEXT NOT NULL,
-  estado_registro TEXT NOT NULL, pago TEXT, registro TEXT, historial TEXT NOT NULL)`;
+  estado_registro TEXT NOT NULL, pago TEXT, registro TEXT, historial TEXT NOT NULL, etapa_manual TEXT)`;
 
 class ErrorDeUso extends Error {}
 
@@ -77,6 +79,16 @@ function estadoDelRegistro(recibidos, correo) {
   return { estado: faltantes.length ? REGISTRO.FALTAN : REGISTRO.COMPLETO, faltantes };
 }
 
+/** En que va el cliente, en una sola frase: es lo que se muestra en la lista. */
+function etapaDe(venta) {
+  if (venta.estado_pago === PAGO.RECHAZADO) return 'Pago rechazado';
+  if (venta.estado_pago === PAGO.SIN_SOPORTE) return 'Pendiente de pago';
+  if (venta.estado_registro === REGISTRO.FALTAN) return 'Faltan documentos';
+  if (venta.estado_registro === REGISTRO.PENDIENTE) return 'Pendiente de registro';
+  if (venta.estado_pago === PAGO.POR_CONFIRMAR) return 'Pago por confirmar';
+  return venta.etapa_manual || 'Listo para radicar';
+}
+
 function elegirAsesora(diaDeLaSemana, turno) {
   if (diaDeLaSemana === DIA_DEL_REEMPLAZO) return { asesora: REEMPLAZO, turno };
   return { asesora: TITULARES[turno % TITULARES.length], turno: turno + 1 };
@@ -100,7 +112,8 @@ function telefonoDelChat(cuerpo) {
 }
 
 function aVenta(fila) {
-  return { ...fila, pago: fila.pago ? JSON.parse(fila.pago) : null, registro: fila.registro ? JSON.parse(fila.registro) : null, historial: JSON.parse(fila.historial) };
+  const venta = { ...fila, pago: fila.pago ? JSON.parse(fila.pago) : null, registro: fila.registro ? JSON.parse(fila.registro) : null, historial: JSON.parse(fila.historial) };
+  return { ...venta, etapa: etapaDe(venta) };
 }
 
 function conHistorial(venta, ahora, hecho) {
@@ -124,10 +137,11 @@ async function porTelefono(env, telefono) {
 }
 
 async function guardar(env, venta, cambios, ahora, hecho) {
-  const nueva = { ...venta, ...cambios, actualizada: ahora, historial: conHistorial(venta, ahora, hecho) };
-  await env.DB.prepare('UPDATE demo_ventas SET actualizada = ?, cliente = ?, estado_pago = ?, estado_registro = ?, pago = ?, registro = ?, historial = ? WHERE id = ?')
+  const cambiada = { ...venta, ...cambios, actualizada: ahora, historial: conHistorial(venta, ahora, hecho) };
+  const nueva = { ...cambiada, etapa: etapaDe(cambiada) };
+  await env.DB.prepare('UPDATE demo_ventas SET actualizada = ?, cliente = ?, estado_pago = ?, estado_registro = ?, pago = ?, registro = ?, historial = ?, etapa_manual = ? WHERE id = ?')
     .bind(nueva.actualizada, nueva.cliente, nueva.estado_pago, nueva.estado_registro, nueva.pago ? JSON.stringify(nueva.pago) : null,
-      nueva.registro ? JSON.stringify(nueva.registro) : null, JSON.stringify(nueva.historial), nueva.id)
+      nueva.registro ? JSON.stringify(nueva.registro) : null, JSON.stringify(nueva.historial), nueva.etapa_manual || null, nueva.id)
     .run();
   return nueva;
 }
@@ -148,8 +162,8 @@ async function crearVenta(env, datos, ahora) {
   }
   const venta = {
     id: crypto.randomUUID(), creada: ahora, actualizada: ahora, cliente: texto(datos.cliente), telefono, servicio, valor, asesora,
-    estado_pago: PAGO.SIN_SOPORTE, estado_registro: REGISTRO.PENDIENTE, pago: null, registro: null,
-    historial: [{ fecha: ahora, hecho: `Venta creada y asignada a ${asesora}` }],
+    estado_pago: PAGO.SIN_SOPORTE, estado_registro: REGISTRO.PENDIENTE, pago: null, registro: null, etapa_manual: null,
+    etapa: 'Pendiente de pago', historial: [{ fecha: ahora, hecho: `Venta creada y asignada a ${asesora}` }],
   };
   await env.DB.prepare('INSERT INTO demo_ventas (id, creada, actualizada, cliente, telefono, servicio, valor, asesora, estado_pago, estado_registro, pago, registro, historial) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
     .bind(venta.id, venta.creada, venta.actualizada, venta.cliente, venta.telefono, venta.servicio, venta.valor, venta.asesora, venta.estado_pago, venta.estado_registro, null, null, JSON.stringify(venta.historial))
@@ -194,10 +208,20 @@ async function confirmarPago(env, datos, ahora) {
   return guardar(env, venta, { estado_pago: estado }, ahora, `Contabilidad: pago ${estado.toLowerCase()}${nota ? ` (${nota})` : ''}`);
 }
 
+async function cambiarEtapa(env, datos, ahora) {
+  const venta = await porId(env, datos.id);
+  const etapa = texto(datos.etapa);
+  if (etapa && !ETAPAS_MANUALES.includes(etapa)) throw new ErrorDeUso('Esa etapa no existe');
+  if (venta.estado_pago !== PAGO.CONFIRMADO || venta.estado_registro !== REGISTRO.COMPLETO) {
+    throw new ErrorDeUso('Primero deben estar el pago confirmado y el registro completo');
+  }
+  return guardar(env, venta, { etapa_manual: etapa || null }, ahora, `Etapa: ${etapa || 'Listo para radicar'}`);
+}
+
 /** Lo que el agente puede saber de una venta: nada de datos de otros clientes. */
 function paraElAgente(venta) {
   if (!venta) return { encontrada: false };
-  return { encontrada: true, servicio: venta.servicio, valor_esperado: venta.valor, asesora: venta.asesora, estado_pago: venta.estado_pago, estado_registro: venta.estado_registro };
+  return { encontrada: true, etapa: venta.etapa, servicio: venta.servicio, valor_esperado: venta.valor, asesora: venta.asesora, estado_pago: venta.estado_pago, estado_registro: venta.estado_registro };
 }
 
 async function comoHerramienta(env, cuerpo, ahora) {
@@ -218,7 +242,8 @@ async function comoHerramienta(env, cuerpo, ahora) {
 
 async function comoPanel(env, cuerpo, ahora) {
   switch (cuerpo.accion) {
-    case 'listar': return { ok: true, ventas: await todas(env), asesoras: [...TITULARES, REEMPLAZO] };
+    case 'listar': return { ok: true, ventas: await todas(env), asesoras: [...TITULARES, REEMPLAZO], etapas: ETAPAS_MANUALES };
+    case 'cambiar_etapa': return { ok: true, venta: await cambiarEtapa(env, cuerpo, ahora) };
     case 'crear_venta': return { ok: true, venta: await crearVenta(env, cuerpo, ahora) };
     case 'ver': return { ok: true, venta: await porId(env, cuerpo.id) };
     case 'confirmar_pago': return { ok: true, venta: await confirmarPago(env, cuerpo, ahora) };
@@ -244,6 +269,8 @@ async function handler(request, env) {
   const ahora = new Date().toISOString();
   try {
     await env.DB.prepare(TABLA).run();
+    // Las tablas creadas antes de que existieran las etapas no tienen la columna; si ya esta, la orden falla y se ignora.
+    await env.DB.prepare('ALTER TABLE demo_ventas ADD COLUMN etapa_manual TEXT').run().catch(() => undefined);
     const esHerramienta = cuerpo.input && typeof cuerpo.input === 'object';
     if (esHerramienta && esPublica) throw new ErrorDeUso('Accion desconocida');
     return json(esHerramienta ? await comoHerramienta(env, cuerpo, ahora) : await comoPanel(env, cuerpo, ahora));

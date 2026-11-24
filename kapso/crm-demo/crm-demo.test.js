@@ -19,9 +19,10 @@ function entornoDePrueba(secretos = {}) {
     run: async () => {
       if (sql.startsWith('INSERT')) filas.set(valores[0], Object.fromEntries(columnas.map((columna, i) => [columna, valores[i]])));
       if (sql.startsWith('UPDATE')) {
-        const [actualizada, cliente, estado_pago, estado_registro, pago, registro, historial, id] = valores;
-        filas.set(id, { ...filas.get(id), actualizada, cliente, estado_pago, estado_registro, pago, registro, historial });
+        const [actualizada, cliente, estado_pago, estado_registro, pago, registro, historial, etapa_manual, id] = valores;
+        filas.set(id, { ...filas.get(id), actualizada, cliente, estado_pago, estado_registro, pago, registro, historial, etapa_manual });
       }
+      if (sql.startsWith('ALTER')) throw new Error('duplicate column name');
       if (sql.startsWith('DELETE')) filas.delete(valores[0]);
     },
     all: async () => ({ results: [...filas.values()].sort((a, b) => b.creada.localeCompare(a.creada)) }),
@@ -147,4 +148,21 @@ test('la version publica exige la clave y no acepta llamadas de herramienta', as
   assert.equal((await llamar(env, { accion: 'listar' }, { 'x-demo-token': 'clave-de-prueba' })).ok, true);
   const herramienta = await llamar(env, desdeElChat('573001234567', { accion: 'consultar_venta' }), { 'x-demo-token': 'clave-de-prueba' });
   assert.equal(herramienta.ok, false);
+});
+
+test('la etapa del cliente avanza con el pago, el registro y lo que marca la asesora', async () => {
+  const env = entornoDePrueba();
+  const { venta } = await llamar(env, VENTA);
+  assert.equal(venta.etapa, 'Pendiente de pago');
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '1.250.000' }));
+  assert.equal((await llamar(env, { accion: 'ver', id: venta.id })).venta.etapa, 'Pendiente de registro');
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_registro', documentos_recibidos: 'titulo, cedula', correo: 'a@b.co' }));
+  assert.equal((await llamar(env, { accion: 'ver', id: venta.id })).venta.etapa, 'Faltan documentos');
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_registro', documentos_recibidos: 'titulo, notas, cedula', correo: 'a@b.co' }));
+  assert.equal((await llamar(env, { accion: 'ver', id: venta.id })).venta.etapa, 'Pago por confirmar');
+  assert.equal((await llamar(env, { accion: 'cambiar_etapa', id: venta.id, etapa: 'Enviado' })).ok, false);
+  await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true });
+  assert.equal((await llamar(env, { accion: 'ver', id: venta.id })).venta.etapa, 'Listo para radicar');
+  assert.equal((await llamar(env, { accion: 'cambiar_etapa', id: venta.id, etapa: 'Radicado en el MEN' })).venta.etapa, 'Radicado en el MEN');
+  assert.equal((await llamar(env, { accion: 'cambiar_etapa', id: venta.id, etapa: 'Inventada' })).ok, false);
 });

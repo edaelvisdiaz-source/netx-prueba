@@ -86,8 +86,23 @@ Acciones con la llave de Kapso (`POST /functions/<id>/invoke`):
 - `{"accion":"listar"}`, `{"accion":"ver","id":"..."}`, `{"accion":"eliminar","id":"..."}`
 - `{"accion":"confirmar_pago","id":"...","confirmado":true,"nota":"..."}`
 
+`{"accion":"cambiar_etapa","id":"...","etapa":"Radicado en el MEN"}` mueve el trámite una vez
+el pago está confirmado y el registro completo. La etapa del cliente se calcula sola hasta ahí
+(Pendiente de pago → Pendiente de registro → Faltan documentos → Pago por confirmar → Listo
+para radicar) y luego la marca la asesora (Radicado en el MEN, Enviado, Apostillado).
+
+### Pantalla (`crm-demo/pantalla`)
+
 Kapso no sirve páginas desde las funciones (solo `POST`, con una política que bloquea
-formularios y encabezados propios), así que la pantalla del sistema debe vivir en otro lado y
-llamar a un segundo despliegue público del mismo código, protegido con el secreto `CLAVE_PANEL`.
+formularios y encabezados propios), así que la pantalla es un programa aparte para AWS Lambda
+con dirección pública propia. Muestra la página, valida un único usuario y reenvía las acciones
+permitidas al despliegue público del mismo código (`crm-demo-panel`,
+`fee3c4ce-3ad8-4bcc-aae2-18c6e585a1be`), que exige el secreto `CLAVE_PANEL` y no acepta
+llamadas de herramienta. El navegador nunca ve esa clave.
+
+Variables de la Lambda (ninguna va en el repositorio): `USUARIO`, `CLAVE_HASH` (`sal:hash`
+scrypt en hexadecimal), `SECRETO_SESION`, `KAPSO_URL`, `KAPSO_CLAVE`.
+
+Pruebas: `node --test kapso/crm-demo/pantalla/pantalla.test.mjs`
 
 Pruebas: `node --test kapso/crm-demo/crm-demo.test.js`
