@@ -254,7 +254,6 @@ test('la IA registra la cotizacion del chat como venta y no la duplica', async (
   const primera = await llamar(env, desdeElChat('573001234567', { accion: 'registrar_cotizacion', servicio: 'Apostilla de titulo', valor: '250', moneda: 'EUR', tasa: '4500' }));
   assert.equal(primera.creada, true);
   assert.equal(primera.valor_esperado, 250);
-  assert.match(primera.enlace_formulario, /\/f\//);
   const segunda = await llamar(env, desdeElChat('573001234567', { accion: 'registrar_cotizacion', servicio: 'Otra', valor: '999' }));
   assert.equal(segunda.creada, false);
   assert.equal(segunda.valor_esperado, 250);
@@ -291,4 +290,26 @@ test('la IA le pone a un cliente sin precio la cotizacion que escribio la asesor
   assert.equal(cotizada.valor_esperado, 250);
   assert.equal(cotizada.etapa, 'Pendiente de pago');
   assert.equal((await llamar(env, { accion: 'listar' })).ventas.length, 1);
+});
+
+test('el cliente puede pagar por abonos y el saldo se va descontando', async () => {
+  const env = entornoDePrueba();
+  const { venta } = await llamar(env, { ...VENTA, valor: '150', moneda: 'EUR', tasa: '4500' });
+  assert.equal((await llamar(env, desdeElChat('573001234567', { accion: 'consultar_venta' }))).enlace_formulario, undefined);
+  const abono = await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '75', moneda: 'EUR', archivo_url: 'https://archivos.invalid/soporte1.jpg' }));
+  assert.equal(abono.comparacion, 'pago menor');
+  assert.equal(abono.saldo_pendiente, 75);
+  assert.match(abono.enlace_formulario, /\/f\//);
+  await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true });
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_registro', documentos_recibidos: 'titulo, notas, cedula', correo: 'a@b.co' }));
+  assert.equal((await llamar(env, { accion: 'ver', id: venta.id })).venta.etapa, 'Saldo pendiente');
+  const resto = await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '340.000', moneda: 'COP' }));
+  assert.equal(resto.comparacion, 'coincide');
+  assert.equal(resto.saldo_pendiente, 0);
+  const final = (await llamar(env, { accion: 'ver', id: venta.id })).venta;
+  assert.equal(final.pago.pagos.length, 2);
+  assert.equal(final.pago.pagos[0].archivo, 'https://archivos.invalid/soporte1.jpg');
+  assert.equal(final.estado_pago, 'Por confirmar');
+  await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true });
+  assert.equal((await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '10', moneda: 'EUR' }))).ok, false);
 });

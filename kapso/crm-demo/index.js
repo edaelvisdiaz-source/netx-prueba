@@ -117,6 +117,7 @@ function etapaDe(venta) {
   if (venta.estado_registro === REGISTRO.FALTAN) return 'Faltan documentos';
   if (venta.estado_registro === REGISTRO.PENDIENTE) return 'Pendiente de registro';
   if (venta.estado_pago === PAGO.POR_CONFIRMAR) return 'Pago por confirmar';
+  if (venta.pago?.saldo > 0) return 'Saldo pendiente';
   return venta.etapa_manual || 'Listo para radicar';
 }
 
@@ -245,18 +246,48 @@ async function crearVenta(env, datos, ahora, sinCotizar = false) {
   return { ...venta, enlace: ENLACE_FORMULARIO + venta.codigo };
 }
 
+/** Lo que vale un pago en la moneda de la venta, o null si no se puede convertir. */
+function enMonedaDeLaVenta(venta, valor, moneda) {
+  const monedaVenta = venta.moneda || 'COP';
+  if (valor === null) return null;
+  if (moneda === monedaVenta) return valor;
+  if (!MONEDAS.includes(moneda) || !(venta.tasa > 0)) return null;
+  return moneda === 'COP' ? valor / venta.tasa : valor * venta.tasa;
+}
+
+/**
+ * Registra un soporte de pago. Un cliente puede pagar en varios abonos: cada soporte se suma a los
+ * anteriores y el saldo es lo que falta para completar el valor de la venta.
+ */
 async function guardarPago(env, venta, datos, ahora) {
-  if (venta.estado_pago === PAGO.CONFIRMADO) throw new ErrorDeUso('El pago de esta venta ya fue confirmado por Contabilidad');
+  const anteriores = venta.pago?.pagos || [];
+  const saldoAnterior = venta.pago?.saldo ?? venta.valor;
+  if (venta.estado_pago === PAGO.CONFIRMADO && saldoAnterior <= 0) throw new ErrorDeUso('El pago de esta venta ya fue confirmado por Contabilidad');
   const valorPagado = leerValor(datos.valor);
-  const comparacion = compararConMoneda(venta, valorPagado, datos.moneda);
-  const pago = {
-    fecha: texto(datos.fecha), valor: valorPagado, moneda: comparacion.moneda, medio: texto(datos.medio), referencia: texto(datos.referencia),
-    pagador: texto(datos.pagador), destino: texto(datos.destino), observaciones: texto(datos.observaciones), archivo: texto(datos.archivo_url),
-    valor_esperado: comparacion.esperado, moneda_venta: venta.moneda || 'COP', valor_venta: venta.valor, tasa: comparacion.convertido ? venta.tasa : null,
-    comparacion: comparacion.resultado, diferencia: comparacion.diferencia, recibido: ahora,
+  const moneda = leerMoneda(datos.moneda) || venta.moneda || 'COP';
+  const equivalente = enMonedaDeLaVenta(venta, valorPagado, moneda);
+  const soporte = {
+    fecha: texto(datos.fecha), valor: valorPagado, moneda, equivalente: equivalente === null ? null : Math.round(equivalente * 100) / 100,
+    medio: texto(datos.medio), referencia: texto(datos.referencia), pagador: texto(datos.pagador), destino: texto(datos.destino),
+    observaciones: texto(datos.observaciones), archivo: texto(datos.archivo_url), recibido: ahora,
   };
-  const nueva = await guardar(env, venta, { pago, estado_pago: PAGO.POR_CONFIRMAR }, ahora, `Soporte de pago recibido: ${comparacion.resultado}`);
-  return { venta: nueva, comparacion: comparacion.resultado, diferencia: comparacion.diferencia, valor_esperado: comparacion.esperado, moneda: comparacion.moneda };
+  const pagos = [...anteriores, soporte];
+  const pagado = Math.round(pagos.reduce((suma, uno) => suma + (uno.equivalente || 0), 0) * 100) / 100;
+  const huboConversion = pagos.some((uno) => uno.equivalente !== null && uno.moneda !== (venta.moneda || 'COP'));
+  const margen = huboConversion ? venta.valor * TOLERANCIA_AL_CONVERTIR : 0;
+  const saldoExacto = Math.round((venta.valor - pagado) * 100) / 100;
+  const saldo = Math.abs(saldoExacto) <= margen ? 0 : saldoExacto;
+  let comparacion = saldo === 0 ? 'coincide' : saldo > 0 ? 'pago menor' : 'pago mayor';
+  if (valorPagado === null) comparacion = 'valor no legible';
+  else if (equivalente === null) comparacion = 'moneda distinta';
+  const directa = compararConMoneda(venta, valorPagado, moneda);
+  const pago = {
+    ...soporte, valor_esperado: anteriores.length ? null : directa.esperado, moneda_venta: venta.moneda || 'COP', valor_venta: venta.valor,
+    tasa: huboConversion ? venta.tasa : null, comparacion, diferencia: anteriores.length ? null : directa.diferencia, pagos, pagado, saldo,
+  };
+  const hecho = `Soporte de pago ${pagos.length} recibido: ${comparacion}${saldo > 0 ? `, saldo pendiente ${saldo} ${venta.moneda || 'COP'}` : ''}`;
+  const nueva = await guardar(env, venta, { pago, estado_pago: PAGO.POR_CONFIRMAR }, ahora, hecho);
+  return { venta: nueva, comparacion, diferencia: pago.diferencia, valor_esperado: directa.esperado, moneda, saldo, moneda_venta: venta.moneda || 'COP' };
 }
 
 async function guardarRegistro(env, venta, datos, ahora) {
@@ -340,7 +371,7 @@ async function cambiarEtapa(env, datos, ahora) {
 /** Lo que el agente puede saber de una venta: nada de datos de otros clientes. */
 function paraElAgente(venta) {
   if (!venta) return { encontrada: false };
-  return { encontrada: true, etapa: venta.etapa, enlace_formulario: venta.enlace, servicio: venta.servicio, valor_esperado: venta.valor, moneda: venta.moneda || 'COP', asesora: venta.asesora, estado_pago: venta.estado_pago, estado_registro: venta.estado_registro };
+  return { encontrada: true, etapa: venta.etapa, servicio: venta.servicio, valor_esperado: venta.valor, moneda: venta.moneda || 'COP', asesora: venta.asesora, estado_pago: venta.estado_pago, estado_registro: venta.estado_registro };
 }
 
 async function comoHerramienta(env, cuerpo, ahora) {
@@ -365,8 +396,8 @@ async function comoHerramienta(env, cuerpo, ahora) {
   if (!venta) return { ok: false, error: 'Este numero no tiene una venta registrada en el sistema' };
   if (entrada.accion === 'guardar_pago') {
     if (!(venta.valor > 0)) return { ok: false, error: 'Este cliente aun no tiene cotizacion: la asesora debe ponerle el valor antes de registrar el pago' };
-    const { comparacion, diferencia, valor_esperado, moneda } = await guardarPago(env, venta, entrada, ahora);
-    return { ok: true, comparacion, diferencia, valor_esperado, moneda, vars: { pago_comparacion: comparacion } };
+    const { comparacion, diferencia, valor_esperado, moneda, saldo, moneda_venta } = await guardarPago(env, venta, entrada, ahora);
+    return { ok: true, comparacion, diferencia, valor_esperado, moneda, saldo_pendiente: saldo, moneda_del_saldo: moneda_venta, enlace_formulario: venta.enlace, vars: { pago_comparacion: comparacion } };
   }
   if (entrada.accion === 'guardar_registro') {
     const { estado, faltantes } = await guardarRegistro(env, venta, entrada, ahora);

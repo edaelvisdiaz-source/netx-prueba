@@ -98,7 +98,7 @@ const fecha = (iso) => iso ? new Date(iso).toLocaleString('es-CO', { dateStyle: 
 function claseDeEtapa(etapa) {
   if (['Apostillado', 'Listo para radicar'].includes(etapa)) return 'ok';
   if (['Pago rechazado'].includes(etapa)) return 'mal';
-  if (['Pago por confirmar', 'Faltan documentos'].includes(etapa) || etapa.startsWith('Por cotizar')) return 'alerta';
+  if (['Pago por confirmar', 'Faltan documentos', 'Saldo pendiente'].includes(etapa) || etapa.startsWith('Por cotizar')) return 'alerta';
   if (['Radicado en el MEN', 'Enviado'].includes(etapa)) return 'azul';
   return '';
 }
@@ -234,7 +234,11 @@ function detalle(v) {
         pago ? [campos([['Comparación', etiqueta(pago.comparacion, claseComparacion)], ['Valor del soporte', pesos(pago.valor, pago.moneda)], ['Valor esperado', pesos(pago.valor_esperado, pago.moneda)],
           ['Conversión', pago.tasa ? pesos(pago.valor_venta, pago.moneda_venta) + ' a ' + pesos(pago.tasa) + ' por euro' : ''],
           ['Diferencia', pago.diferencia ? pesos(pago.diferencia, pago.moneda) : ''], ['Fecha', pago.fecha], ['Medio', pago.medio], ['Referencia', pago.referencia],
-          ['Paga', pago.pagador], ['Recibe', pago.destino], ['Observaciones', pago.observaciones], ['Recibido', fecha(pago.recibido)]]),
+          ['Paga', pago.pagador], ['Recibe', pago.destino], ['Observaciones', pago.observaciones], ['Recibido', fecha(pago.recibido)],
+          ['Total pagado', pago.pagos && pesos(pago.pagado, pago.moneda_venta)], ['Saldo pendiente', pago.pagos && etiqueta(pesos(pago.saldo, pago.moneda_venta), pago.saldo > 0 ? 'alerta' : 'ok')]]),
+          pago.pagos && [h('label', null, 'Soportes de pago del cliente'), h('ul', { clase: 'historial' }, pago.pagos.map((uno, i) => h('li', null,
+            'Soporte ' + (i + 1) + ': ' + pesos(uno.valor, uno.moneda) + (uno.referencia ? ' · ref. ' + uno.referencia : '') + ' · ' + fecha(uno.recibido) + ' ',
+            /^https:\/\//.test(uno.archivo || '') && h('a', { href: uno.archivo, target: '_blank', rel: 'noopener noreferrer' }, 'Ver archivo'))))],
           v.estado_pago !== 'Confirmado' && h('div', { clase: 'acciones' },
             h('button', { clase: 'bien', alClick: () => ejecutar('confirmar_pago', { id: v.id, confirmado: true }, error) }, 'Contabilidad: confirmar pago'),
             h('button', { clase: 'mal', alClick: () => ejecutar('confirmar_pago', { id: v.id, confirmado: false }, error) }, 'Rechazar'))]
