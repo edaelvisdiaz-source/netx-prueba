@@ -20,8 +20,8 @@ function entornoDePrueba(secretos = {}) {
       if (sql.startsWith('INSERT')) filas.set(valores[0], Object.fromEntries(columnas.map((columna, i) => [columna, valores[i]])));
       if (sql.startsWith('UPDATE demo_ventas SET codigo')) return;
       if (sql.startsWith('UPDATE')) {
-        const [actualizada, cliente, estado_pago, estado_registro, pago, registro, historial, etapa_manual, id] = valores;
-        filas.set(id, { ...filas.get(id), actualizada, cliente, estado_pago, estado_registro, pago, registro, historial, etapa_manual });
+        const [servicio, valor, moneda, tasa, actualizada, cliente, estado_pago, estado_registro, pago, registro, historial, etapa_manual, id] = valores;
+        filas.set(id, { ...filas.get(id), servicio, valor, moneda, tasa, actualizada, cliente, estado_pago, estado_registro, pago, registro, historial, etapa_manual });
       }
       if (sql.startsWith('ALTER')) throw new Error('duplicate column name');
       if (sql.startsWith('DELETE')) filas.delete(valores[0]);
@@ -116,6 +116,7 @@ test('un numero sin venta no puede guardar nada', async () => {
   await llamar(env, VENTA);
   assert.equal((await llamar(env, desdeElChat('573009999999', { accion: 'consultar_venta' }))).encontrada, false);
   assert.equal((await llamar(env, desdeElChat('573009999999', { accion: 'guardar_pago', valor: '1' }))).ok, false);
+  assert.equal((await llamar(env, { accion: 'listar' })).ventas.length, 1);
 });
 
 test('el agente no recibe datos personales al consultar la venta', async () => {
@@ -261,4 +262,33 @@ test('la IA registra la cotizacion del chat como venta y no la duplica', async (
   assert.equal(ventas.length, 1);
   assert.match(ventas[0].historial.at(-1).hecho, /creada por la IA/);
   assert.equal((await llamar(env, desdeElChat('573001234567', { accion: 'registrar_cotizacion', servicio: 'X', valor: '0' }))).creada, false);
+});
+
+test('los documentos pueden llegar antes de cotizar y la asesora pone el precio despues', async () => {
+  const env = entornoDePrueba();
+  const registro = await llamar(env, desdeElChat('573001234567', { accion: 'guardar_registro', nombre: 'David Lasso', cedula: '1088357834', documentos_recibidos: 'titulo, cedula' }));
+  assert.equal(registro.cliente_nuevo, true);
+  assert.deepEqual(registro.faltantes, ['notas', 'correo']);
+  const { ventas } = await llamar(env, { accion: 'listar' });
+  assert.equal(ventas.length, 1);
+  assert.equal(ventas[0].etapa, 'Por cotizar (faltan documentos)');
+  assert.equal(ventas[0].cliente, 'David Lasso');
+  assert.equal((await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '350.000' }))).ok, false);
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_registro', documentos_recibidos: 'notas', correo: 'd@x.co' }));
+  assert.equal((await llamar(env, { accion: 'ver', id: ventas[0].id })).venta.etapa, 'Por cotizar');
+  const cotizada = await llamar(env, { accion: 'cotizar', id: ventas[0].id, servicio: 'Apostilla de titulo y notas', valor: '350.000', moneda: 'COP' });
+  assert.equal(cotizada.venta.valor, 350000);
+  assert.equal(cotizada.venta.etapa, 'Pendiente de pago');
+  assert.equal(cotizada.venta.registro.nombre, 'David Lasso');
+  assert.equal((await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '350.000' }))).comparacion, 'coincide');
+  assert.equal((await llamar(env, { accion: 'cotizar', id: ventas[0].id, servicio: 'Otro', valor: '1' })).ok, false);
+});
+
+test('la IA le pone a un cliente sin precio la cotizacion que escribio la asesora', async () => {
+  const env = entornoDePrueba();
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_registro', documentos_recibidos: 'titulo, notas, cedula', correo: 'd@x.co' }));
+  const cotizada = await llamar(env, desdeElChat('573001234567', { accion: 'registrar_cotizacion', servicio: 'Apostilla', valor: '250', moneda: 'EUR', tasa: '4500' }));
+  assert.equal(cotizada.valor_esperado, 250);
+  assert.equal(cotizada.etapa, 'Pendiente de pago');
+  assert.equal((await llamar(env, { accion: 'listar' })).ventas.length, 1);
 });

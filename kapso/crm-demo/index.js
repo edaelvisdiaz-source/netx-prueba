@@ -110,6 +110,8 @@ function estadoDelRegistro(recibidos, correo) {
 
 /** En que va el cliente, en una sola frase: es lo que se muestra en la lista. */
 function etapaDe(venta) {
+  // Cliente que ya envio documentos pero al que la asesora aun no le ha cotizado.
+  if (!(venta.valor > 0)) return venta.estado_registro === REGISTRO.FALTAN ? 'Por cotizar (faltan documentos)' : 'Por cotizar';
   if (venta.estado_pago === PAGO.RECHAZADO) return 'Pago rechazado';
   if (venta.estado_pago === PAGO.SIN_SOPORTE) return 'Pendiente de pago';
   if (venta.estado_registro === REGISTRO.FALTAN) return 'Faltan documentos';
@@ -193,24 +195,37 @@ async function porTelefono(env, telefono) {
 async function guardar(env, venta, cambios, ahora, hecho) {
   const cambiada = { ...venta, ...cambios, actualizada: ahora, historial: conHistorial(venta, ahora, hecho) };
   const nueva = { ...cambiada, etapa: etapaDe(cambiada) };
-  await env.DB.prepare('UPDATE demo_ventas SET actualizada = ?, cliente = ?, estado_pago = ?, estado_registro = ?, pago = ?, registro = ?, historial = ?, etapa_manual = ? WHERE id = ?')
-    .bind(nueva.actualizada, nueva.cliente, nueva.estado_pago, nueva.estado_registro, nueva.pago ? JSON.stringify(nueva.pago) : null,
+  await env.DB.prepare('UPDATE demo_ventas SET servicio = ?, valor = ?, moneda = ?, tasa = ?, actualizada = ?, cliente = ?, estado_pago = ?, estado_registro = ?, pago = ?, registro = ?, historial = ?, etapa_manual = ? WHERE id = ?')
+    .bind(nueva.servicio, nueva.valor, nueva.moneda || 'COP', nueva.tasa || null, nueva.actualizada, nueva.cliente, nueva.estado_pago, nueva.estado_registro, nueva.pago ? JSON.stringify(nueva.pago) : null,
       nueva.registro ? JSON.stringify(nueva.registro) : null, JSON.stringify(nueva.historial), nueva.etapa_manual || null, nueva.id)
     .run();
   return nueva;
 }
 
-async function crearVenta(env, datos, ahora) {
-  const telefono = soloDigitos(datos.telefono);
+function leerCotizacion(datos) {
   const valor = leerValor(datos.valor);
   const servicio = texto(datos.servicio);
-  if (telefono.length < 10) throw new ErrorDeUso('El telefono debe tener al menos 10 digitos');
   if (!valor || valor <= 0) throw new ErrorDeUso('El valor de la venta debe ser mayor que cero');
   if (!servicio) throw new ErrorDeUso('Falta el servicio');
   const moneda = leerMoneda(datos.moneda) || 'COP';
   if (!MONEDAS.includes(moneda)) throw new ErrorDeUso('La moneda debe ser COP o EUR');
   const tasa = leerValor(datos.tasa);
   if (moneda === 'EUR' && !(tasa > 0)) throw new ErrorDeUso('Para cotizar en euros escribe la tasa de cambio (pesos por euro)');
+  return { servicio, valor, moneda, tasa: tasa > 0 ? tasa : null };
+}
+
+/** Pone o cambia el precio de un cliente mientras no haya enviado soporte de pago. */
+async function cotizar(env, venta, datos, ahora, quien) {
+  if (venta.estado_pago !== PAGO.SIN_SOPORTE) throw new ErrorDeUso('Esta venta ya tiene soporte de pago; no se puede cambiar el valor');
+  const cotizacion = leerCotizacion(datos);
+  const simbolo = cotizacion.moneda === 'EUR' ? 'EUR' : 'COP';
+  return guardar(env, venta, cotizacion, ahora, `Cotizado por ${quien}: ${cotizacion.servicio}, ${cotizacion.valor} ${simbolo}`);
+}
+
+async function crearVenta(env, datos, ahora, sinCotizar = false) {
+  const telefono = soloDigitos(datos.telefono);
+  if (telefono.length < 10) throw new ErrorDeUso('El telefono debe tener al menos 10 digitos');
+  const { servicio, valor, moneda, tasa } = sinCotizar ? { servicio: 'Por cotizar', valor: 0, moneda: 'COP', tasa: null } : leerCotizacion(datos);
   let asesora = texto(datos.asesora);
   if (!asesora) {
     const turno = Number(await env.KV.get('demo:turno')) || 0;
@@ -219,9 +234,10 @@ async function crearVenta(env, datos, ahora) {
     await env.KV.put('demo:turno', String(decision.turno));
   }
   const venta = {
-    id: crypto.randomUUID(), creada: ahora, actualizada: ahora, cliente: texto(datos.cliente), telefono, servicio, valor, moneda, tasa: tasa > 0 ? tasa : null, asesora,
+    id: crypto.randomUUID(), creada: ahora, actualizada: ahora, cliente: texto(datos.cliente), telefono, servicio, valor, moneda, tasa, asesora,
     estado_pago: PAGO.SIN_SOPORTE, estado_registro: REGISTRO.PENDIENTE, pago: null, registro: null, etapa_manual: null,
-    codigo: nuevoCodigo(), etapa: 'Pendiente de pago', historial: [{ fecha: ahora, hecho: `Venta creada y asignada a ${asesora}` }],
+    codigo: nuevoCodigo(), etapa: sinCotizar ? 'Por cotizar' : 'Pendiente de pago',
+    historial: [{ fecha: ahora, hecho: `${sinCotizar ? 'Cliente creado al recibir sus documentos' : 'Venta creada'} y asignado a ${asesora}` }],
   };
   await env.DB.prepare('INSERT INTO demo_ventas (id, creada, actualizada, cliente, telefono, servicio, valor, asesora, estado_pago, estado_registro, pago, registro, historial, codigo, moneda, tasa) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
     .bind(venta.id, venta.creada, venta.actualizada, venta.cliente, venta.telefono, venta.servicio, venta.valor, venta.asesora, venta.estado_pago, venta.estado_registro, null, null, JSON.stringify(venta.historial), venta.codigo, venta.moneda, venta.tasa)
@@ -332,14 +348,23 @@ async function comoHerramienta(env, cuerpo, ahora) {
   const venta = await porTelefono(env, telefonoDelChat(cuerpo));
   if (entrada.accion === 'consultar_venta') return paraElAgente(venta);
   if (entrada.accion === 'registrar_cotizacion') {
-    // Si el cliente ya tiene una venta sin pagar no se crea otra: la asesora la ajusta en la plataforma.
+    // Cliente que ya envio documentos y aun no tiene precio: se le pone el que escribio la asesora.
+    if (venta && !(venta.valor > 0)) return { ok: true, creada: true, ...paraElAgente(await cotizar(env, venta, entrada, ahora, 'la IA a partir del chat (verificar)')) };
+    // Si ya tiene una venta sin pagar no se crea otra: la asesora la ajusta en la plataforma.
     if (venta && venta.estado_pago === PAGO.SIN_SOPORTE) return { ok: true, creada: false, ...paraElAgente(venta) };
     const nueva = await crearVenta(env, { ...entrada, telefono: telefonoDelChat(cuerpo) }, ahora);
     await guardar(env, { ...nueva, historial: nueva.historial }, {}, ahora, 'Venta creada por la IA a partir de la cotización del chat: verificar');
     return { ok: true, creada: true, ...paraElAgente(await porId(env, nueva.id)) };
   }
+  if (entrada.accion === 'guardar_registro' && !venta) {
+    // Los documentos pueden llegar antes de cotizar: se crea el cliente y la asesora le pone el precio despues.
+    const prospecto = await crearVenta(env, { telefono: telefonoDelChat(cuerpo) }, ahora, true);
+    const { estado, faltantes } = await guardarRegistro(env, prospecto, entrada, ahora);
+    return { ok: true, estado, faltantes, asesora: prospecto.asesora, cliente_nuevo: true, vars: { registro_estado: estado } };
+  }
   if (!venta) return { ok: false, error: 'Este numero no tiene una venta registrada en el sistema' };
   if (entrada.accion === 'guardar_pago') {
+    if (!(venta.valor > 0)) return { ok: false, error: 'Este cliente aun no tiene cotizacion: la asesora debe ponerle el valor antes de registrar el pago' };
     const { comparacion, diferencia, valor_esperado, moneda } = await guardarPago(env, venta, entrada, ahora);
     return { ok: true, comparacion, diferencia, valor_esperado, moneda, vars: { pago_comparacion: comparacion } };
   }
@@ -356,6 +381,7 @@ async function comoPanel(env, cuerpo, ahora) {
     case 'formulario_ver': return verFormulario(env, cuerpo);
     case 'guardar_lectura': return guardarLectura(env, cuerpo, ahora);
     case 'formulario_enviar': return enviarFormulario(env, cuerpo, ahora);
+    case 'cotizar': return { ok: true, venta: await cotizar(env, await porId(env, cuerpo.id), cuerpo, ahora, 'la asesora') };
     case 'cambiar_etapa': return { ok: true, venta: await cambiarEtapa(env, cuerpo, ahora) };
     case 'crear_venta': return { ok: true, venta: await crearVenta(env, cuerpo, ahora) };
     case 'ver': return { ok: true, venta: await porId(env, cuerpo.id) };

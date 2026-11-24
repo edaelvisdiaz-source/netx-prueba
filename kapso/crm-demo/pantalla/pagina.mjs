@@ -89,7 +89,7 @@ const fecha = (iso) => iso ? new Date(iso).toLocaleString('es-CO', { dateStyle: 
 function claseDeEtapa(etapa) {
   if (['Apostillado', 'Listo para radicar'].includes(etapa)) return 'ok';
   if (['Pago rechazado'].includes(etapa)) return 'mal';
-  if (['Pago por confirmar', 'Faltan documentos'].includes(etapa)) return 'alerta';
+  if (['Pago por confirmar', 'Faltan documentos'].includes(etapa) || etapa.startsWith('Por cotizar')) return 'alerta';
   if (['Radicado en el MEN', 'Enviado'].includes(etapa)) return 'azul';
   return '';
 }
@@ -149,8 +149,9 @@ function resumen() {
   const cuenta = (prueba) => estado.ventas.filter(prueba).length;
   const cajas = [
     ['Ventas', estado.ventas.length],
-    ['Pendientes de pago', cuenta((v) => v.estado_pago === 'Sin soporte')],
+    ['Pendientes de pago', cuenta((v) => v.etapa === 'Pendiente de pago')],
     ['Pagos por confirmar', cuenta((v) => v.estado_pago === 'Por confirmar')],
+    ['Por cotizar', cuenta((v) => v.etapa.startsWith('Por cotizar'))],
     ['Faltan documentos', cuenta((v) => v.estado_registro === 'Faltan documentos')],
     ['Listos para radicar', cuenta((v) => v.etapa === 'Listo para radicar')],
   ];
@@ -187,7 +188,7 @@ function pintarFilas() {
     alKeydown: (e) => { if (e.key === 'Enter') { estado.abierta = v.id; pintar(); } } },
     h('td', null, h('div', null, v.cliente || 'Sin nombre todavía'), h('div', { clase: 'suave' }, '+' + v.telefono)),
     h('td', null, etiqueta(v.etapa, claseDeEtapa(v.etapa))),
-    h('td', { clase: 'ocultar-movil' }, v.servicio), h('td', null, pesos(v.valor, v.moneda)),
+    h('td', { clase: 'ocultar-movil' }, v.servicio), h('td', null, v.valor > 0 ? pesos(v.valor, v.moneda) : '—'),
     h('td', { clase: 'ocultar-movil' }, v.asesora), h('td', { clase: 'ocultar-movil suave' }, fecha(v.actualizada)))));
 }
 
@@ -214,7 +215,8 @@ function detalle(v) {
       h('h2', null, v.cliente || 'Sin nombre todavía'), etiqueta(v.etapa, claseDeEtapa(v.etapa))),
     h('div', { clase: 'dos' },
       h('div', { clase: 'tarjeta' }, h('h2', null, 'Venta'),
-        campos([['WhatsApp', '+' + v.telefono], ['Servicio', v.servicio], ['Valor', pesos(v.valor, v.moneda)], ['Tasa de cambio', v.tasa ? pesos(v.tasa) + ' por euro' : ''], ['Asesora', v.asesora], ['Creada', fecha(v.creada)]]),
+        campos([['WhatsApp', '+' + v.telefono], ['Servicio', v.servicio], ['Valor', v.valor > 0 ? pesos(v.valor, v.moneda) : 'Sin cotizar'], ['Tasa de cambio', v.tasa ? pesos(v.tasa) + ' por euro' : ''], ['Asesora', v.asesora], ['Creada', fecha(v.creada)]]),
+        v.estado_pago === 'Sin soporte' && h('div', { clase: 'acciones' }, h('button', { clase: v.valor > 0 ? '' : 'primario', alClick: () => abrirNuevaVenta(v) }, v.valor > 0 ? 'Cambiar cotización' : 'Cotizar')),
         v.enlace && [h('label', null, 'Enlace del formulario para el cliente'),
           h('div', { clase: 'barra' }, h('input', { readonly: true, value: v.enlace, 'aria-label': 'Enlace del formulario', alFocus: (e) => e.target.select() }),
             h('button', { alClick: async (e) => { try { await navigator.clipboard.writeText(v.enlace); e.target.textContent = 'Copiado'; } catch { e.target.textContent = 'Cópialo a mano'; } } }, 'Copiar'))],
@@ -255,7 +257,7 @@ async function abrirDocumento(id, documento, error) {
   } catch (fallo) { if (ventana) ventana.close(); error.textContent = fallo.message; }
 }
 
-function abrirNuevaVenta() {
+function abrirNuevaVenta(existente) {
   const error = h('p', { clase: 'error', role: 'alert' });
   const campo = (id, texto, atributos) => [h('label', { for: id }, texto), h('input', { id, ...atributos })];
   const asesora = h('select', { id: 'asesora' }, h('option', { value: '' }, 'Asignar por turno'), estado.asesoras.map((a) => h('option', { value: a }, a)));
@@ -265,20 +267,21 @@ function abrirNuevaVenta() {
     evento.preventDefault();
     const valor = (id) => formulario.querySelector('#' + id).value.trim();
     try {
-      await accion('crear_venta', { cliente: valor('cliente'), telefono: valor('telefono'), servicio: valor('servicio'), valor: valor('valor'), moneda: moneda.value, tasa: valor('tasa'), asesora: asesora.value });
+      if (existente) await accion('cotizar', { id: existente.id, servicio: valor('servicio'), valor: valor('valor'), moneda: moneda.value, tasa: valor('tasa') });
+      else await accion('crear_venta', { cliente: valor('cliente'), telefono: valor('telefono'), servicio: valor('servicio'), valor: valor('valor'), moneda: moneda.value, tasa: valor('tasa'), asesora: asesora.value });
       dialogo.close(); dialogo.remove(); await cargar();
     } catch (fallo) { error.textContent = fallo.message; }
   } },
-    h('h2', null, 'Nueva venta'),
-    h('p', { clase: 'suave' }, 'El cliente debe escribir a la línea de WhatsApp desde este mismo número.'),
-    campo('telefono', 'WhatsApp del cliente (con indicativo, ej. 573001234567)', { required: true, inputmode: 'tel' }),
-    campo('servicio', 'Servicio', { required: true, value: 'Apostilla de título y notas' }),
+    h('h2', null, existente ? 'Cotizar' : 'Nueva venta'),
+    !existente && h('p', { clase: 'suave' }, 'El cliente debe escribir a la línea de WhatsApp desde este mismo número.'),
+    !existente && campo('telefono', 'WhatsApp del cliente (con indicativo, ej. 573001234567)', { required: true, inputmode: 'tel' }),
+    campo('servicio', 'Servicio', { required: true, value: existente && existente.valor > 0 ? existente.servicio : 'Apostilla de título y notas' }),
     h('label', { for: 'moneda' }, 'Moneda de la cotización'), moneda,
     campo('valor', 'Valor de la venta', { required: true, inputmode: 'decimal', placeholder: '1.250.000 o 250' }),
     campo('tasa', 'Tasa de cambio: pesos por euro (obligatoria si cotizas en euros)', { inputmode: 'numeric', placeholder: '4.500' }),
-    campo('cliente', 'Nombre (opcional; se completa con los documentos)', {}),
-    h('label', { for: 'asesora' }, 'Asesora'), asesora, error,
-    h('div', { clase: 'acciones' }, h('button', { clase: 'primario', type: 'submit' }, 'Crear venta'),
+    !existente && campo('cliente', 'Nombre (opcional; se completa con los documentos)', {}),
+    !existente && [h('label', { for: 'asesora' }, 'Asesora'), asesora], error,
+    h('div', { clase: 'acciones' }, h('button', { clase: 'primario', type: 'submit' }, existente ? 'Guardar cotización' : 'Crear venta'),
       h('button', { type: 'button', alClick: () => { dialogo.close(); dialogo.remove(); } }, 'Cancelar')));
   dialogo.append(formulario);
   document.body.append(dialogo);
