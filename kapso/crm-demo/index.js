@@ -293,7 +293,14 @@ async function guardarPago(env, venta, datos, ahora) {
     tasa: huboConversion ? venta.tasa : null, comparacion, diferencia: anteriores.length ? null : directa.diferencia, pagos, pagado, saldo,
   };
   const hecho = `Soporte de pago ${pagos.length} recibido: ${comparacion}${saldo > 0 ? `, saldo pendiente ${saldo} ${venta.moneda || 'COP'}` : ''}`;
-  const nueva = await guardar(env, venta, { pago, estado_pago: PAGO.POR_CONFIRMAR }, ahora, hecho);
+  const cambios = { pago, estado_pago: PAGO.POR_CONFIRMAR };
+  let nota = hecho;
+  // Deja de ser prospecto y pasa a cliente, con su codigo, en cuanto llega su primer soporte de pago legible.
+  if (!venta.codigo_cliente && valorPagado !== null) {
+    cambios.codigo_cliente = await siguienteCodigoDeCliente(env);
+    nota += `. Pasa de prospecto a cliente con el código ${cambios.codigo_cliente}`;
+  }
+  const nueva = await guardar(env, venta, cambios, ahora, nota);
   return { venta: nueva, comparacion, diferencia: pago.diferencia, valor_esperado: directa.esperado, moneda, saldo, moneda_venta: venta.moneda || 'COP' };
 }
 

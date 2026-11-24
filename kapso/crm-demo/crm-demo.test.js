@@ -359,26 +359,32 @@ test('el cliente autoriza el tratamiento de datos sobre el resumen de su tramite
   assert.equal((await llamar(env, desdeElChat('573001234567', { accion: 'consultar_venta' }))).enlace_autorizacion, undefined);
 });
 
-test('al confirmar el primer pago el prospecto pasa a cliente con codigo y se ve su saldo', async () => {
+test('al recibir el primer soporte el prospecto pasa a cliente con codigo y se ve su saldo', async () => {
   const env = entornoDePrueba();
   const { venta } = await llamar(env, { ...VENTA, valor: '450.000' });
   assert.equal((await llamar(env, { accion: 'ver', id: venta.id })).venta.tipo, 'Prospecto');
   assert.equal((await llamar(env, { accion: 'ver', id: venta.id })).venta.saldo, 450000);
   await llamar(env, desdeElChat('573001234567', { accion: 'guardar_registro', documentos_recibidos: 'titulo, notas, cedula', correo: 'a@b.co' }));
+  assert.equal((await llamar(env, { accion: 'ver', id: venta.id })).venta.tipo, 'Prospecto');
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: 'no se lee', moneda: 'COP' }));
+  assert.equal((await llamar(env, { accion: 'ver', id: venta.id })).venta.tipo, 'Prospecto');
   await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '120.000', moneda: 'COP' }));
+  const recibido = (await llamar(env, { accion: 'ver', id: venta.id })).venta;
+  assert.equal(recibido.tipo, 'Cliente');
+  assert.equal(recibido.codigo_cliente, 'CL-0001');
+  assert.equal(recibido.saldo, 330000);
+  assert.match(recibido.historial.at(-1).hecho, /Pasa de prospecto a cliente con el código CL-0001/);
   const confirmada = (await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true })).venta;
-  assert.equal(confirmada.tipo, 'Cliente');
   assert.equal(confirmada.codigo_cliente, 'CL-0001');
-  assert.equal(confirmada.saldo, 330000);
   assert.equal(confirmada.etapa, 'Saldo pendiente');
-  assert.match(confirmada.historial.at(-1).hecho, /CL-0001.*Saldo pendiente: 330000 COP/);
+  assert.match(confirmada.historial.at(-1).hecho, /Saldo pendiente: 330000 COP/);
   await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '330.000', moneda: 'COP' }));
   const final = (await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true })).venta;
   assert.equal(final.codigo_cliente, 'CL-0001');
   assert.equal(final.saldo, 0);
   assert.equal(final.etapa, 'Listo para radicar');
-  const otra = (await llamar(env, { ...VENTA, telefono: '573009998877' })).venta;
+  await llamar(env, { ...VENTA, telefono: '573009998877' });
   await llamar(env, desdeElChat('573009998877', { accion: 'guardar_pago', valor: '1.250.000' }));
-  assert.equal((await llamar(env, { accion: 'confirmar_pago', id: otra.id, confirmado: true })).venta.codigo_cliente, 'CL-0002');
-  assert.equal((await llamar(env, { accion: 'confirmar_pago', id: otra.id, confirmado: false })).venta.codigo_cliente, 'CL-0002');
+  const { ventas } = await llamar(env, { accion: 'listar' });
+  assert.deepEqual(ventas.map((una) => una.codigo_cliente).sort(), ['CL-0001', 'CL-0002']);
 });

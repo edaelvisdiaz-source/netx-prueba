@@ -71,7 +71,7 @@ const TARIFAS = [
   ['Apostilla Estándar (15 días)', 110],
   ['Apostilla Estándar (15 días) + radicación MEN', 140],
 ];
-const estado = { ventas: [], asesoras: [], etapas: [], filtro: '', buscar: '', abierta: null, reloj: null };
+const estado = { vista: 'prospectos', ventas: [], asesoras: [], etapas: [], filtro: '', buscar: '', abierta: null, reloj: null };
 
 function h(etiqueta, atributos, ...hijos) {
   const nodo = document.createElement(etiqueta);
@@ -171,13 +171,18 @@ function resumen() {
 }
 
 function listado() {
-  const etapas = [...new Set(estado.ventas.map((v) => v.etapa))];
-  const buscar = h('input', { type: 'search', placeholder: 'Buscar por nombre, teléfono o cédula', value: estado.buscar, 'aria-label': 'Buscar',
+  const deEstaVista = (v) => (v.tipo === 'Cliente') === (estado.vista === 'clientes');
+  const etapas = [...new Set(estado.ventas.filter(deEstaVista).map((v) => v.etapa))];
+  const buscar = h('input', { type: 'search', placeholder: 'Buscar por nombre, teléfono, cédula o código', value: estado.buscar, 'aria-label': 'Buscar',
     alInput: (e) => { estado.buscar = e.target.value; pintarFilas(); } });
   const filtro = h('select', { 'aria-label': 'Filtrar por etapa', alChange: (e) => { estado.filtro = e.target.value; pintarFilas(); } },
     h('option', { value: '' }, 'Todas las etapas'), etapas.map((e) => h('option', { value: e, selected: e === estado.filtro }, e)));
   const cuerpo = h('tbody', { id: 'filas' });
+  const cuantos = (tipo) => estado.ventas.filter((v) => (v.tipo === 'Cliente') === (tipo === 'clientes')).length;
+  const pestana = (clave, nombre) => h('button', { clase: estado.vista === clave ? 'primario' : '', 'aria-pressed': estado.vista === clave ? 'true' : 'false',
+    alClick: () => { estado.vista = clave; estado.filtro = ''; pintar(); } }, nombre + ' (' + cuantos(clave) + ')');
   const tabla = h('div', { clase: 'tarjeta' },
+    h('div', { clase: 'barra' }, pestana('prospectos', 'Prospectos'), pestana('clientes', 'Clientes')),
     h('div', { clase: 'barra' }, buscar, filtro),
     h('table', null, h('thead', null, h('tr', null,
       h('th', null, 'Cliente'), h('th', null, 'Etapa'), h('th', { clase: 'ocultar-movil' }, 'Servicio'),
@@ -190,11 +195,11 @@ function pintarFilas() {
   const cuerpo = document.getElementById('filas');
   if (!cuerpo) return;
   const texto = estado.buscar.trim().toLowerCase();
-  const visibles = estado.ventas.filter((v) => (!estado.filtro || v.etapa === estado.filtro)
-    && (!texto || [v.cliente, v.telefono, v.registro && v.registro.cedula].some((campo) => String(campo || '').toLowerCase().includes(texto))));
+  const visibles = estado.ventas.filter((v) => (v.tipo === 'Cliente') === (estado.vista === 'clientes') && (!estado.filtro || v.etapa === estado.filtro)
+    && (!texto || [v.cliente, v.telefono, v.codigo_cliente, v.registro && v.registro.cedula].some((campo) => String(campo || '').toLowerCase().includes(texto))));
   if (!visibles.length) {
     return cuerpo.replaceChildren(h('tr', null, h('td', { colspan: 7, clase: 'suave' },
-      estado.ventas.length ? 'Ninguna venta coincide con la búsqueda.' : 'Aún no hay ventas. Crea la primera con «+ Nueva venta».')));
+      estado.vista === 'clientes' ? 'Aún no hay clientes aquí: un prospecto pasa a cliente cuando llega su primer soporte de pago.' : 'No hay prospectos que coincidan.')));
   }
   cuerpo.replaceChildren(...visibles.map((v) => h('tr', { clase: 'fila', tabindex: 0, alClick: () => { estado.abierta = v.id; pintar(); },
     alKeydown: (e) => { if (e.key === 'Enter') { estado.abierta = v.id; pintar(); } } },
