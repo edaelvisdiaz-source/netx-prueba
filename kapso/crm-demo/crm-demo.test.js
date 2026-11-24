@@ -100,7 +100,7 @@ test('recorre el flujo completo: venta, pago, registro y confirmacion de Contabi
   assert.equal(confirmada.venta.cliente, 'David Andres Lasso Garcia');
   assert.equal(confirmada.venta.registro.cedula, '1088357834');
   assert.equal(confirmada.venta.registro.correo, 'david@correo.com');
-  assert.equal(confirmada.venta.historial.length, 4);
+  assert.equal(confirmada.venta.historial.length, 5);
 });
 
 test('avisa cuando el soporte no coincide con el valor de la venta', async () => {
@@ -377,7 +377,8 @@ test('al recibir el primer soporte el prospecto pasa a cliente con codigo y se v
   const confirmada = (await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true })).venta;
   assert.equal(confirmada.codigo_cliente, 'CL-0001');
   assert.equal(confirmada.etapa, 'Saldo pendiente');
-  assert.match(confirmada.historial.at(-1).hecho, /Saldo pendiente: 330000 COP/);
+  assert.match(confirmada.historial.at(-2).hecho, /Saldo pendiente: 330000 COP/);
+  assert.match(confirmada.historial.at(-1).hecho, /falta la llave de WhatsApp/);
   await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '330.000', moneda: 'COP' }));
   const final = (await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true })).venta;
   assert.equal(final.codigo_cliente, 'CL-0001');
@@ -419,4 +420,30 @@ test('se puede quitar un soporte registrado por error y el saldo se recalcula', 
   assert.equal(vacia.pago, null);
   assert.equal(vacia.estado_pago, 'Sin soporte');
   assert.equal(vacia.codigo_cliente, 'CL-0001');
+});
+
+test('al confirmar el pago y al cambiar de etapa se le avisa al cliente por WhatsApp', async (t) => {
+  const enviados = [];
+  let aceptaTexto = true;
+  t.mock.method(globalThis, 'fetch', async (url, opciones) => {
+    const cuerpo = JSON.parse(opciones.body); enviados.push(cuerpo);
+    return new Response('{}', { status: cuerpo.type === 'text' && !aceptaTexto ? 400 : 200 });
+  });
+  const env = entornoDePrueba({ KAPSO_API_KEY: 'llave' });
+  const { venta } = await llamar(env, { ...VENTA, valor: '450.000' });
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_registro', nombre: 'Bertha Patricia Rivera', documentos_recibidos: 'titulo, notas, cedula', correo: 'a@b.co' }));
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '120.000', moneda: 'COP' }));
+  const confirmada = (await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true })).venta;
+  assert.equal(enviados[0].to, '573001234567');
+  assert.match(enviados[0].text.body, /Hola Bertha, confirmamos tu pago de \$ 120\.000 COP.*saldo pendiente es \$ 330\.000 COP/);
+  assert.match(confirmada.historial.at(-1).hecho, /Aviso al cliente \(pago_confirmado\): enviado/);
+  aceptaTexto = false;
+  const radicada = (await llamar(env, { accion: 'cambiar_etapa', id: venta.id, etapa: 'Radicado en el MEN' })).venta;
+  assert.equal(radicada.etapa, 'Radicado en el MEN');
+  assert.equal(enviados.at(-1).type, 'template');
+  assert.equal(enviados.at(-1).template.name, 'cambio_de_etapa');
+  assert.deepEqual(enviados.at(-1).template.components[0].parameters.map((dato) => dato.text), ['Bertha', 'Apostilla de titulo', 'Radicado en el MEN']);
+  assert.match(radicada.historial.at(-1).hecho, /enviado con plantilla/);
+  await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: false });
+  assert.equal(enviados.filter((uno) => JSON.stringify(uno).includes('rechaz')).length, 0);
 });

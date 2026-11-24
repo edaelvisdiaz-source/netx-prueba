@@ -117,8 +117,10 @@ function etapaDe(venta) {
   if (venta.estado_registro === REGISTRO.FALTAN) return 'Faltan documentos';
   if (venta.estado_registro === REGISTRO.PENDIENTE) return 'Pendiente de registro';
   if (venta.estado_pago === PAGO.POR_CONFIRMAR) return 'Pago por confirmar';
+  // La asesora puede avanzar el tramite aunque quede saldo: manda la etapa que ella marco.
+  if (venta.etapa_manual) return venta.etapa_manual;
   if (venta.pago?.saldo > 0) return 'Saldo pendiente';
-  return venta.etapa_manual || 'Listo para radicar';
+  return 'Listo para radicar';
 }
 
 /** Lo que le falta por pagar al cliente, en la moneda de la venta; null si aun no hay cotizacion. */
@@ -466,7 +468,14 @@ async function confirmarPago(env, datos, ahora) {
     hecho += `. Pasa de prospecto a cliente con el código ${cambios.codigo_cliente}`;
   }
   if (datos.confirmado && venta.pago.saldo > 0) hecho += `. Saldo pendiente: ${venta.pago.saldo} ${venta.moneda || 'COP'}`;
-  const nueva = await guardar(env, venta, cambios, ahora, hecho);
+  let nueva = await guardar(env, venta, cambios, ahora, hecho);
+  if (datos.confirmado) {
+    const moneda = nueva.moneda || 'COP';
+    const pagado = dinero(nueva.pago.pagado, moneda);
+    const saldo = dinero(Math.max(nueva.pago.saldo, 0), moneda);
+    nueva = await avisar(env, nueva, ahora, `Hola ${nombreCorto(nueva)}, confirmamos tu pago de ${pagado} para tu trámite de ${nueva.servicio}. Tu saldo pendiente es ${saldo}. Gracias por confiar en Apostillas y Legalizaciones.`,
+      'pago_confirmado', [nombreCorto(nueva), pagado, nueva.servicio, saldo]);
+  }
   return { ...nueva, tipo: nueva.codigo_cliente ? 'Cliente' : 'Prospecto', saldo: saldoDe(nueva) };
 }
 
@@ -477,7 +486,46 @@ async function cambiarEtapa(env, datos, ahora) {
   if (venta.estado_pago !== PAGO.CONFIRMADO || venta.estado_registro !== REGISTRO.COMPLETO) {
     throw new ErrorDeUso('Primero deben estar el pago confirmado y el registro completo');
   }
-  return guardar(env, venta, { etapa_manual: etapa || null }, ahora, `Etapa: ${etapa || 'Listo para radicar'}`);
+  const nueva = await guardar(env, venta, { etapa_manual: etapa || null }, ahora, `Etapa: ${etapa || 'Listo para radicar'}`);
+  if (!etapa) return nueva;
+  return avisar(env, nueva, ahora, `Hola ${nombreCorto(nueva)}, tu trámite de ${nueva.servicio} avanzó a la etapa ${etapa}. Te seguiremos informando por este medio.`,
+    'cambio_de_etapa', [nombreCorto(nueva), nueva.servicio, etapa]);
+}
+
+const LINEA_DE_WHATSAPP = '1389236027614507';
+const API_DE_WHATSAPP = 'https://api.kapso.ai/meta/whatsapp/v24.0';
+
+function nombreCorto(venta) {
+  return texto(venta.registro?.nombre || venta.cliente).split(' ')[0] || 'cliente';
+}
+
+function dinero(valor, moneda) {
+  return `${moneda === 'EUR' ? '€' : '$'} ${Number(valor).toLocaleString('es-CO')} ${moneda === 'EUR' ? 'EUR' : 'COP'}`;
+}
+
+async function enviarWhatsApp(env, telefono, contenido) {
+  const respuesta = await fetch(`${API_DE_WHATSAPP}/${LINEA_DE_WHATSAPP}/messages`, {
+    method: 'POST',
+    headers: { 'X-API-Key': env.KAPSO_API_KEY, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ messaging_product: 'whatsapp', to: telefono, ...contenido }),
+  });
+  return respuesta.ok;
+}
+
+/**
+ * Le avisa al cliente por WhatsApp y lo deja anotado en el historial. Primero intenta el texto
+ * libre (sirve si el cliente escribio en las ultimas 24 horas); si WhatsApp lo rechaza, usa la
+ * plantilla aprobada por Meta. Un aviso que falla nunca deshace el cambio ya guardado.
+ */
+async function avisar(env, venta, ahora, mensaje, plantilla, datos) {
+  if (!env.KAPSO_API_KEY) return guardar(env, venta, {}, ahora, 'Aviso al cliente no enviado: falta la llave de WhatsApp en la función');
+  let resultado = 'no se pudo enviar';
+  try {
+    if (await enviarWhatsApp(env, venta.telefono, { type: 'text', text: { body: mensaje } })) resultado = 'enviado';
+    else if (await enviarWhatsApp(env, venta.telefono, { type: 'template', template: { name: plantilla, language: { code: 'es' },
+      components: [{ type: 'body', parameters: datos.map((dato) => ({ type: 'text', text: String(dato) })) }] } })) resultado = 'enviado con plantilla';
+  } catch { resultado = 'no se pudo enviar (error de red)'; }
+  return guardar(env, venta, {}, ahora, `Aviso al cliente (${plantilla}): ${resultado}`);
 }
 
 /** Lo que el agente puede saber de una venta: nada de datos de otros clientes. */
