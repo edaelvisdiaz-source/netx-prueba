@@ -447,3 +447,13 @@ test('al confirmar el pago y al cambiar de etapa se le avisa al cliente por What
   await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: false });
   assert.equal(enviados.filter((uno) => JSON.stringify(uno).includes('rechaz')).length, 0);
 });
+
+test('el aviso tambien funciona si la llave se guardo con el nombre KAPSO-API', async (t) => {
+  const espia = t.mock.method(globalThis, 'fetch', async () => new Response('{}'));
+  const env = entornoDePrueba({ 'KAPSO-API': 'llave' });
+  const { venta } = await llamar(env, VENTA);
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '1.250.000' }));
+  const confirmada = (await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true })).venta;
+  assert.equal(espia.mock.calls[0].arguments[1].headers['X-API-Key'], 'llave');
+  assert.match(confirmada.historial.at(-1).hecho, /pago_confirmado\): enviado/);
+});

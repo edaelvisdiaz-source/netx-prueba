@@ -503,10 +503,15 @@ function dinero(valor, moneda) {
   return `${moneda === 'EUR' ? '€' : '$'} ${Number(valor).toLocaleString('es-CO')} ${moneda === 'EUR' ? 'EUR' : 'COP'}`;
 }
 
+/** La llave de Kapso para enviar mensajes; acepta los dos nombres con que se ha guardado el secreto. */
+function llaveDeWhatsApp(env) {
+  return env.KAPSO_API_KEY || env['KAPSO-API'] || '';
+}
+
 async function enviarWhatsApp(env, telefono, contenido) {
   const respuesta = await fetch(`${API_DE_WHATSAPP}/${LINEA_DE_WHATSAPP}/messages`, {
     method: 'POST',
-    headers: { 'X-API-Key': env.KAPSO_API_KEY, 'Content-Type': 'application/json' },
+    headers: { 'X-API-Key': llaveDeWhatsApp(env), 'Content-Type': 'application/json' },
     body: JSON.stringify({ messaging_product: 'whatsapp', to: telefono, ...contenido }),
   });
   return respuesta.ok;
@@ -518,7 +523,7 @@ async function enviarWhatsApp(env, telefono, contenido) {
  * plantilla aprobada por Meta. Un aviso que falla nunca deshace el cambio ya guardado.
  */
 async function avisar(env, venta, ahora, mensaje, plantilla, datos) {
-  if (!env.KAPSO_API_KEY) return guardar(env, venta, {}, ahora, 'Aviso al cliente no enviado: falta la llave de WhatsApp en la función');
+  if (!llaveDeWhatsApp(env)) return guardar(env, venta, {}, ahora, 'Aviso al cliente no enviado: falta la llave de WhatsApp en la función');
   let resultado = 'no se pudo enviar';
   try {
     if (await enviarWhatsApp(env, venta.telefono, { type: 'text', text: { body: mensaje } })) resultado = 'enviado';
