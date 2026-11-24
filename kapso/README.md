@@ -138,3 +138,8 @@ detecta cuando el cliente vuelve a escribir; y no hay notas internas, así que l
 encuentra se ve en la plataforma demo, no en la bandeja.
 
 La automatización anterior `Pago y registro de clientes` (la IA atiende sola) quedó en borrador.
+
+La tarifa oficial de apostillas para convalidación (Turbo 170, Flash 150, Express 130, Estándar
+110 euros; radicación al MEN 30 euros en Express y Estándar) está en dos sitios que hay que
+cambiar juntos: `TARIFAS` en `crm-demo/pantalla/pagina.mjs` y el texto del agente en
+`apoyo-comercial/automatizacion.json`.

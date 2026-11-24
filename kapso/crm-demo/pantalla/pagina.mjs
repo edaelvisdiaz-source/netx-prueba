@@ -62,6 +62,15 @@ ul.historial li{padding:6px 0;border-bottom:1px dashed var(--borde);font-size:14
 <script nonce="__NONCE__">
 'use strict';
 const raiz = document.getElementById('raiz');
+// Tarifas vigentes de apostilla para convalidacion (en euros). 'Con radicacion' suma los 30 euros del MEN.
+const TARIFAS = [
+  ['Apostilla Turbo (apostilla + radicación MEN en 24 horas hábiles)', 170],
+  ['Apostilla Flash (3 días, radicación MEN en 48 horas incluida)', 150],
+  ['Apostilla Express (8 días)', 130],
+  ['Apostilla Express (8 días) + radicación MEN', 160],
+  ['Apostilla Estándar (15 días)', 110],
+  ['Apostilla Estándar (15 días) + radicación MEN', 140],
+];
 const estado = { ventas: [], asesoras: [], etapas: [], filtro: '', buscar: '', abierta: null, reloj: null };
 
 function h(etiqueta, atributos, ...hijos) {
@@ -276,6 +285,14 @@ function abrirNuevaVenta(existente) {
     !existente && h('p', { clase: 'suave' }, 'El cliente debe escribir a la línea de WhatsApp desde este mismo número.'),
     !existente && campo('telefono', 'WhatsApp del cliente (con indicativo, ej. 573001234567)', { required: true, inputmode: 'tel' }),
     campo('servicio', 'Servicio', { required: true, value: existente && existente.valor > 0 ? existente.servicio : 'Apostilla de título y notas' }),
+    h('label', { for: 'tarifa' }, 'Tarifa'),
+    h('select', { id: 'tarifa', alChange: (e) => {
+      const tarifa = TARIFAS[Number(e.target.value)];
+      if (!tarifa) return;
+      formulario.querySelector('#servicio').value = tarifa[0];
+      formulario.querySelector('#valor').value = tarifa[1];
+      moneda.value = 'EUR';
+    } }, h('option', { value: '' }, 'Otra (escribir a mano)'), TARIFAS.map(([nombre, valor], i) => h('option', { value: i }, nombre + ' — € ' + valor))),
     h('label', { for: 'moneda' }, 'Moneda de la cotización'), moneda,
     campo('valor', 'Valor de la venta', { required: true, inputmode: 'decimal', placeholder: '1.250.000 o 250' }),
     campo('tasa', 'Tasa de cambio: pesos por euro (obligatoria si cotizas en euros)', { inputmode: 'numeric', placeholder: '4.500' }),
