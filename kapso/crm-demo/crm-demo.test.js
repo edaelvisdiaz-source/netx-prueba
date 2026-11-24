@@ -247,3 +247,18 @@ test('una venta en euros exige la tasa y guarda el pago con su conversion', asyn
   assert.equal(guardada.moneda_venta, 'EUR');
   assert.equal(guardada.tasa, 4500);
 });
+
+test('la IA registra la cotizacion del chat como venta y no la duplica', async () => {
+  const env = entornoDePrueba();
+  const primera = await llamar(env, desdeElChat('573001234567', { accion: 'registrar_cotizacion', servicio: 'Apostilla de titulo', valor: '250', moneda: 'EUR', tasa: '4500' }));
+  assert.equal(primera.creada, true);
+  assert.equal(primera.valor_esperado, 250);
+  assert.match(primera.enlace_formulario, /\/f\//);
+  const segunda = await llamar(env, desdeElChat('573001234567', { accion: 'registrar_cotizacion', servicio: 'Otra', valor: '999' }));
+  assert.equal(segunda.creada, false);
+  assert.equal(segunda.valor_esperado, 250);
+  const { ventas } = await llamar(env, { accion: 'listar' });
+  assert.equal(ventas.length, 1);
+  assert.match(ventas[0].historial.at(-1).hecho, /creada por la IA/);
+  assert.equal((await llamar(env, desdeElChat('573001234567', { accion: 'registrar_cotizacion', servicio: 'X', valor: '0' }))).creada, false);
+});

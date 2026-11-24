@@ -1,0 +1,242 @@
+{
+ "workflow": {
+  "name": "Apoyo comercial a las asesoras",
+  "description": "La asesora lleva la conversación. La IA detecta pagos, documentos y cotizaciones, los registra en el sistema y responde solo cuando es oportuno y seguro.",
+  "definition": {
+   "nodes": [
+    {
+     "id": "start",
+     "type": "flow-node",
+     "position": {
+      "x": 100,
+      "y": 100
+     },
+     "data": {
+      "node_type": "start",
+      "config": {}
+     }
+    },
+    {
+     "id": "apoyo",
+     "type": "flow-node",
+     "position": {
+      "x": 100,
+      "y": 260
+     },
+     "data": {
+      "node_type": "agent",
+      "config": {
+       "system_prompt": "Eres el asistente de apoyo comercial de Apostillas y Legalizaciones (Convalidaciones.com), una firma colombiana que tramita apostillas, legalizaciones y convalidaciones de títulos. Trabajas dentro del WhatsApp de la empresa JUNTO a una asesora humana. La conversación la lleva ella. Tú apoyas: detectas lo que llega, lo registras en el sistema y respondes solo cuando es oportuno y estás seguro.\n\nREGLA DE ORO: lo que escribes como texto normal NO le llega al cliente. Solo le llega lo que envías con send_notification_to_user. Si no debes responder, no llames a esa herramienta. Al terminar cada turno llama siempre a enter_waiting.\n\nEn cada mensaje nuevo:\n1. Llama a get_whatsapp_context y a get_current_datetime. Mira los últimos mensajes: cuáles son del cliente, cuáles de la asesora (los enviados por la empresa) y a qué hora.\n2. Llama a consultar_venta para saber si este número ya tiene una venta y en qué etapa va.\n3. Decide según estos casos.\n\nA) LLEGÓ UN ARCHIVO (foto o PDF). Léelo con ask_about_file (la URL sale de get_whatsapp_context).\n- Si es un soporte de pago: extrae fecha, valor, moneda (COP o EUR), medio, referencia, quién paga y a quién. Verifica que sea una operación terminada (no cotización, ni pendiente, ni rechazada). Si hay venta, llama a guardar_pago; el sistema compara el valor, no lo calcules tú. Luego envía al cliente: que recibiste el soporte y que Contabilidad lo verifica. Nunca digas que el pago está confirmado o aprobado. Si el sistema respondió \"coincide\", añade que puede enviar título, certificado de notas y cédula por este chat o por el formulario, y escribe el enlace_formulario exacto. Si respondió otra cosa, no menciones la diferencia: di solo que su asesora lo revisa.\n- Si es título, certificado de notas o cédula: extrae nombre completo, cédula, fecha de nacimiento, universidad, título, fecha de grado y código de verificación, y llama a guardar_registro (en documentos_recibidos usa solo: titulo, notas, cedula). Envía al cliente qué recibiste y qué falta. Si un documento está borroso o cortado, dilo y pregunta si lo reenvía o continúa así; solo importa que sea legible.\n- Si no hay venta para este número, no guardes nada: envía un acuse breve (\"Recibido, tu asesora lo revisa\") y nada más.\n- Si es otro tipo de archivo, no respondas.\n\nB) LA ASESORA COTIZÓ Y EL CLIENTE ACEPTÓ. Si en los mensajes la asesora escribió un servicio con un valor concreto y el cliente lo aceptó de forma explícita, y consultar_venta dice que no hay venta, llama a registrar_cotizacion con esos datos exactos. No inventes ni ajustes valores. No le escribas al cliente por esto.\n\nC) EL CLIENTE ESCRIBE TEXTO. Por defecto NO respondas: responde la asesora. Responde tú solo si se cumple alguna de estas condiciones Y la respuesta está en los DATOS SEGUROS de abajo:\n- Es fuera de horario (lunes a viernes 8:00 a 18:00, sábados 8:00 a 13:00, hora de Colombia).\n- La asesora está demorada: hay mensajes del cliente sin respuesta de la asesora desde hace más de 10 minutos.\n- Es un cliente nuevo que saluda y nadie le ha respondido: salúdalo, dile que en un momento lo atiende una asesora y pregúntale qué trámite necesita y de qué universidad y país es su título.\nSi respondes, sé breve, amable y concreto, y aclara que su asesora continúa la atención. Si la asesora respondió hace poco o está conversando, no interrumpas.\n\nNUNCA respondas tú, pase lo que pase, sobre: precios, descuentos, cotizaciones, plazos o fechas de entrega, viabilidad de un caso, asesoría legal, estado de un pago, reclamos o devoluciones. Eso es de la asesora. Si el cliente pregunta eso fuera de horario o con la asesora demorada, dile solo que su asesora le responde apenas esté disponible.\nSi el cliente pide hablar con una persona o está molesto, no respondas más y llama a handoff_to_human con el motivo.\n\nDATOS SEGUROS (lo único que puedes afirmar por tu cuenta):\n- Para apostillar un título se necesitan tres documentos: el diploma o certificación supletoria del título, el certificado académico de notas y la cédula o pasaporte.\n- Los documentos se pueden enviar por este chat (PDF o foto legible) o por el formulario web de su venta.\n- El pago se envía como foto o PDF del comprobante por este chat; Contabilidad lo verifica.\n- Horario de atención: lunes a viernes de 8:00 a 18:00 y sábados de 8:00 a 13:00, hora de Colombia.\n- Sede: Cra 61B #72-38, Barranquilla, Atlántico.\n- El trámite pasa por estas etapas: pago, registro de documentos, radicación, envío y apostilla. La etapa actual de su trámite es la que devuelve consultar_venta; puedes decírsela.\nNo inventes datos. Si no estás seguro, no respondas.\n\nEscribe siempre en español, con mensajes cortos y sin tecnicismos. No digas que eres una IA salvo que te lo pregunten; si preguntan, di que eres el asistente virtual que apoya a las asesoras.",
+       "provider_model_id": "7c2cc054-60af-4ca8-aa15-030db79ce9db",
+       "reasoning_effort": "medium",
+       "message_delivery_mode": "tool_only",
+       "enabled_default_tools": [
+        "get_whatsapp_context",
+        "get_current_datetime",
+        "ask_about_file",
+        "send_notification_to_user",
+        "enter_waiting",
+        "handoff_to_human",
+        "complete_task"
+       ],
+       "flow_agent_function_tools": [
+        {
+         "name": "consultar_venta",
+         "description": "Consulta en el sistema la venta de este cliente (se busca por su número de WhatsApp). Devuelve el servicio, el valor que debe pagar y la asesora asignada.",
+         "function_id": "3424658c-8c01-49c4-b351-f5608bfde420",
+         "input_schema": {
+          "type": "object",
+          "properties": {
+           "accion": {
+            "type": "string",
+            "enum": [
+             "consultar_venta"
+            ],
+            "description": "Siempre \"consultar_venta\"."
+           }
+          },
+          "required": [
+           "accion"
+          ]
+         }
+        },
+        {
+         "name": "guardar_pago",
+         "description": "Sube al sistema los datos del soporte de pago. El sistema compara el valor con el de la venta y devuelve: coincide, pago menor, pago mayor o valor no legible.",
+         "function_id": "3424658c-8c01-49c4-b351-f5608bfde420",
+         "input_schema": {
+          "type": "object",
+          "properties": {
+           "accion": {
+            "type": "string",
+            "enum": [
+             "guardar_pago"
+            ],
+            "description": "Siempre \"guardar_pago\"."
+           },
+           "valor": {
+            "type": "string",
+            "description": "Valor pagado, tal como aparece en el comprobante."
+           },
+           "fecha": {
+            "type": "string",
+            "description": "Fecha y hora del pago."
+           },
+           "moneda": {
+            "type": "string",
+            "description": "Moneda, por ejemplo COP."
+           },
+           "medio": {
+            "type": "string",
+            "description": "Banco o medio de pago."
+           },
+           "referencia": {
+            "type": "string",
+            "description": "Número de referencia o aprobación."
+           },
+           "pagador": {
+            "type": "string",
+            "description": "Nombre de quien paga."
+           },
+           "destino": {
+            "type": "string",
+            "description": "Cuenta o comercio que recibe."
+           },
+           "observaciones": {
+            "type": "string",
+            "description": "Cualquier cosa que la asesora o Contabilidad deban saber."
+           },
+           "archivo_url": {
+            "type": "string",
+            "description": "URL del archivo del soporte."
+           }
+          },
+          "required": [
+           "accion",
+           "valor"
+          ]
+         }
+        },
+        {
+         "name": "guardar_registro",
+         "description": "Registra en el sistema los datos del cliente leídos de sus documentos. Devuelve si el registro quedó completo o qué falta.",
+         "function_id": "3424658c-8c01-49c4-b351-f5608bfde420",
+         "input_schema": {
+          "type": "object",
+          "properties": {
+           "accion": {
+            "type": "string",
+            "enum": [
+             "guardar_registro"
+            ],
+            "description": "Siempre \"guardar_registro\"."
+           },
+           "nombre": {
+            "type": "string",
+            "description": "Nombre completo."
+           },
+           "cedula": {
+            "type": "string",
+            "description": "Número de cédula."
+           },
+           "fecha_nacimiento": {
+            "type": "string",
+            "description": "Fecha de nacimiento."
+           },
+           "universidad": {
+            "type": "string",
+            "description": "Universidad."
+           },
+           "titulo": {
+            "type": "string",
+            "description": "Nombre del título."
+           },
+           "fecha_grado": {
+            "type": "string",
+            "description": "Fecha de grado."
+           },
+           "codigo_verificacion": {
+            "type": "string",
+            "description": "Código de verificación del título."
+           },
+           "correo": {
+            "type": "string",
+            "description": "Correo electrónico."
+           },
+           "documentos_recibidos": {
+            "type": "string",
+            "description": "Lista separada por comas con lo recibido, usando solo estas palabras: titulo, notas, cedula."
+           },
+           "legibilidad": {
+            "type": "string",
+            "description": "Documentos con legibilidad dudosa, si los hay."
+           },
+           "diferencias": {
+            "type": "string",
+            "description": "Datos que no coinciden entre documentos, si los hay."
+           },
+           "archivos": {
+            "type": "string",
+            "description": "URLs de los archivos recibidos, separadas por comas."
+           }
+          },
+          "required": [
+           "accion",
+           "documentos_recibidos"
+          ]
+         }
+        },
+        {
+         "name": "registrar_cotizacion",
+         "description": "Crea en el sistema la venta de este cliente a partir de la cotización que la ASESORA escribió en el chat y que el cliente aceptó. Devuelve el enlace del formulario. Si el cliente ya tiene una venta sin pagar, no crea otra y devuelve la existente.",
+         "function_id": "3424658c-8c01-49c4-b351-f5608bfde420",
+         "input_schema": {
+          "type": "object",
+          "properties": {
+           "accion": {
+            "type": "string",
+            "enum": [
+             "registrar_cotizacion"
+            ],
+            "description": "Siempre \"registrar_cotizacion\"."
+           },
+           "servicio": {
+            "type": "string",
+            "description": "Servicio cotizado, con las palabras de la asesora."
+           },
+           "valor": {
+            "type": "string",
+            "description": "Valor cotizado, tal como lo escribió la asesora."
+           },
+           "moneda": {
+            "type": "string",
+            "description": "COP o EUR."
+           },
+           "tasa": {
+            "type": "string",
+            "description": "Pesos por euro, solo si la asesora la mencionó."
+           }
+          },
+          "required": [
+           "accion",
+           "servicio",
+           "valor",
+           "moneda"
+          ]
+         }
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "edges": [
+    {
+     "source": "start",
+     "target": "apoyo",
+     "label": "next"
+    }
+   ]
+  }
+ }
+}

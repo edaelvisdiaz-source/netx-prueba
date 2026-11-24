@@ -331,6 +331,13 @@ async function comoHerramienta(env, cuerpo, ahora) {
   const entrada = cuerpo.input;
   const venta = await porTelefono(env, telefonoDelChat(cuerpo));
   if (entrada.accion === 'consultar_venta') return paraElAgente(venta);
+  if (entrada.accion === 'registrar_cotizacion') {
+    // Si el cliente ya tiene una venta sin pagar no se crea otra: la asesora la ajusta en la plataforma.
+    if (venta && venta.estado_pago === PAGO.SIN_SOPORTE) return { ok: true, creada: false, ...paraElAgente(venta) };
+    const nueva = await crearVenta(env, { ...entrada, telefono: telefonoDelChat(cuerpo) }, ahora);
+    await guardar(env, { ...nueva, historial: nueva.historial }, {}, ahora, 'Venta creada por la IA a partir de la cotización del chat: verificar');
+    return { ok: true, creada: true, ...paraElAgente(await porId(env, nueva.id)) };
+  }
   if (!venta) return { ok: false, error: 'Este numero no tiene una venta registrada en el sistema' };
   if (entrada.accion === 'guardar_pago') {
     const { comparacion, diferencia, valor_esperado, moneda } = await guardarPago(env, venta, entrada, ahora);

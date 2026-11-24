@@ -121,3 +121,20 @@ scrypt en hexadecimal), `SECRETO_SESION`, `KAPSO_URL`, `KAPSO_CLAVE`.
 Pruebas: `node --test kapso/crm-demo/pantalla/pantalla.test.mjs`
 
 Pruebas: `node --test kapso/crm-demo/crm-demo.test.js`
+
+## Apoyo comercial a las asesoras (`apoyo-comercial`)
+
+Automatización `b6af1871-c9bf-437e-a902-2b2ab85fc58e`, activa en la línea de pruebas. Un solo
+agente (modelo económico) que acompaña a la asesora: ella lleva la conversación y la IA
+detecta soportes de pago, documentos y cotizaciones aceptadas, los registra en el sistema demo
+y solo le escribe al cliente cuando es oportuno y seguro (acuses de recibo, fuera de horario,
+asesora demorada más de 10 minutos, saludo a un cliente nuevo). Usa `tool_only`: el texto del
+agente no le llega al cliente salvo que llame a `send_notification_to_user`. Nunca responde
+sobre precios, plazos, viabilidad, estado de pagos ni reclamos. No marca los mensajes como
+leídos, para no confundir a la asesora.
+
+Límites conocidos: Kapso no tiene temporizadores, así que la demora de la asesora solo se
+detecta cuando el cliente vuelve a escribir; y no hay notas internas, así que lo que la IA
+encuentra se ve en la plataforma demo, no en la bandeja.
+
+La automatización anterior `Pago y registro de clientes` (la IA atiende sola) quedó en borrador.
