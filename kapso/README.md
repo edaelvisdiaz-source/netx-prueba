@@ -149,3 +149,8 @@ La tarifa oficial de apostillas para convalidación (Turbo 170, Flash 150, Expre
 110 euros; radicación al MEN 30 euros en Express y Estándar) está en dos sitios que hay que
 cambiar juntos: `TARIFAS` en `crm-demo/pantalla/pagina.mjs` y el texto del agente en
 `apoyo-comercial/automatizacion.json`.
+
+La imagen de tarifas que envía el agente es `apoyo-comercial/tarifa.jpg`. Está subida a WhatsApp y
+su identificador se guarda con `{"accion":"fijar_tarifa","media_id":"..."}` en la función
+`Decidir respuesta`. WhatsApp borra los archivos subidos a los 30 días: hay que volver a subirla
+(`POST /meta/whatsapp/v24.0/<línea>/media`) y fijar el nuevo identificador.
