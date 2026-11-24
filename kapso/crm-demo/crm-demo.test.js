@@ -114,8 +114,8 @@ test('avisa cuando el soporte no coincide con el valor de la venta', async () =>
 test('un numero sin venta no puede guardar nada', async () => {
   const env = entornoDePrueba();
   await llamar(env, VENTA);
-  assert.equal((await llamar(env, desdeElChat('573009999999', { accion: 'consultar_venta' }))).encontrada, false);
-  assert.equal((await llamar(env, desdeElChat('573009999999', { accion: 'guardar_pago', valor: '1' }))).ok, false);
+  assert.equal((await llamar(env, desdeElChat('', { accion: 'consultar_venta' }))).encontrada, false);
+  assert.equal((await llamar(env, desdeElChat('', { accion: 'guardar_pago', valor: '1' }))).ok, false);
   assert.equal((await llamar(env, { accion: 'listar' })).ventas.length, 1);
 });
 
@@ -456,4 +456,19 @@ test('el aviso tambien funciona si la llave se guardo con el nombre KAPSO-API', 
   const confirmada = (await llamar(env, { accion: 'confirmar_pago', id: venta.id, confirmado: true })).venta;
   assert.equal(espia.mock.calls[0].arguments[1].headers['X-API-Key'], 'llave');
   assert.match(confirmada.historial.at(-1).hecho, /pago_confirmado\): enviado/);
+});
+
+test('quien escribe por primera vez queda como prospecto desde el primer mensaje', async () => {
+  const env = entornoDePrueba();
+  const primera = await llamar(env, { input: { accion: 'consultar_venta' }, execution_context: { context: { phone_number: '573128461881', contact: { profile_name: 'Laura R' } } } });
+  assert.equal(primera.prospecto_nuevo, true);
+  assert.equal(primera.etapa, 'Por cotizar');
+  const segunda = await llamar(env, desdeElChat('573128461881', { accion: 'consultar_venta' }));
+  assert.equal(segunda.prospecto_nuevo, undefined);
+  const { ventas } = await llamar(env, { accion: 'listar' });
+  assert.equal(ventas.length, 1);
+  assert.equal(ventas[0].tipo, 'Prospecto');
+  assert.equal(ventas[0].cliente, 'Laura R');
+  await llamar(env, desdeElChat('573128461881', { accion: 'guardar_registro', nombre: 'Laura Rhenals', universidad: 'UNIR', documentos_recibidos: '' }));
+  assert.equal((await llamar(env, { accion: 'listar' })).ventas[0].cliente, 'Laura Rhenals');
 });

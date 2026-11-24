@@ -247,7 +247,7 @@ async function crearVenta(env, datos, ahora, sinCotizar = false) {
     id: crypto.randomUUID(), creada: ahora, actualizada: ahora, cliente: texto(datos.cliente), telefono, servicio, valor, moneda, tasa, asesora,
     estado_pago: PAGO.SIN_SOPORTE, estado_registro: REGISTRO.PENDIENTE, pago: null, registro: null, etapa_manual: null,
     codigo: nuevoCodigo(), etapa: sinCotizar ? 'Por cotizar' : 'Pendiente de pago',
-    historial: [{ fecha: ahora, hecho: `${sinCotizar ? 'Cliente creado al recibir sus documentos' : 'Venta creada'} y asignado a ${asesora}` }],
+    historial: [{ fecha: ahora, hecho: `${sinCotizar ? 'Prospecto creado al escribir por WhatsApp' : 'Venta creada'} y asignado a ${asesora}` }],
   };
   await env.DB.prepare('INSERT INTO demo_ventas (id, creada, actualizada, cliente, telefono, servicio, valor, asesora, estado_pago, estado_registro, pago, registro, historial, codigo, moneda, tasa) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
     .bind(venta.id, venta.creada, venta.actualizada, venta.cliente, venta.telefono, venta.servicio, venta.valor, venta.asesora, venta.estado_pago, venta.estado_registro, null, null, JSON.stringify(venta.historial), venta.codigo, venta.moneda, venta.tasa)
@@ -542,7 +542,14 @@ function paraElAgente(venta) {
 async function comoHerramienta(env, cuerpo, ahora) {
   const entrada = cuerpo.input;
   const venta = await porTelefono(env, telefonoDelChat(cuerpo));
-  if (entrada.accion === 'consultar_venta') return paraElAgente(venta);
+  if (entrada.accion === 'consultar_venta') {
+    if (venta) return paraElAgente(venta);
+    // Todo el que escribe queda como prospecto desde su primer mensaje, aunque aun no envie nada.
+    const telefono = telefonoDelChat(cuerpo);
+    if (telefono.length < 10) return { encontrada: false };
+    const prospecto = await crearVenta(env, { telefono, cliente: texto(cuerpo.execution_context?.context?.contact?.profile_name) }, ahora, true);
+    return { ...paraElAgente(await porId(env, prospecto.id)), prospecto_nuevo: true };
+  }
   if (entrada.accion === 'registrar_cotizacion') {
     // Cliente que ya envio documentos y aun no tiene precio: se le pone el que escribio la asesora.
     if (venta && !(venta.valor > 0)) return { ok: true, creada: true, ...paraElAgente(await cotizar(env, venta, entrada, ahora, 'la IA a partir del chat (verificar)')) };
