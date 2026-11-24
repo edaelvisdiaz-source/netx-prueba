@@ -264,8 +264,7 @@
       "node_type": "send_text",
       "config": {
        "message": "{{vars.respuesta}}",
-       "phone_number_id": "1389236027614507",
-       "to_phone_number": "{{system.event.conversation.phone_number}}"
+       "phone_number_id": "1389236027614507"
       }
      }
     },

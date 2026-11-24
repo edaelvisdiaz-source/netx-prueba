@@ -133,6 +133,12 @@ agente no le llega al cliente salvo que llame a `send_notification_to_user`. Nun
 sobre precios, plazos, viabilidad, estado de pagos ni reclamos. No marca los mensajes como
 leídos, para no confundir a la asesora.
 
+El agente se ejecuta una vez por cada mensaje del cliente y termina en segundos (disparador
+`inbound_message`): deja su respuesta en la variable `respuesta` y un paso de envío la manda solo
+si existe. Así la bandeja de la asesora queda libre entre mensajes. Con el disparador
+`whatsapp_event` (modo observador) Kapso omite el envío con `outbound_disabled`, y con una
+ejecución que se queda esperando, la bandeja se bloquea hasta pulsar «Handoff».
+
 Límites conocidos: Kapso no tiene temporizadores, así que la demora de la asesora solo se
 detecta cuando el cliente vuelve a escribir; y no hay notas internas, así que lo que la IA
 encuentra se ve en la plataforma demo, no en la bandeja.
