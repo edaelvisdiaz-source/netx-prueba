@@ -262,6 +262,45 @@ function enMonedaDeLaVenta(venta, valor, moneda) {
   return moneda === 'COP' ? valor / venta.tasa : valor * venta.tasa;
 }
 
+/** Dos soportes son el mismo comprobante si coinciden en referencia o archivo, o en valor, moneda y fecha. */
+function esElMismoSoporte(a, b) {
+  if (a.referencia && b.referencia) return a.referencia.toLowerCase() === b.referencia.toLowerCase();
+  if (a.archivo && b.archivo && a.archivo === b.archivo) return true;
+  return a.valor !== null && a.valor === b.valor && a.moneda === b.moneda && Boolean(a.fecha) && a.fecha === b.fecha;
+}
+
+/** Resume todos los soportes de una venta: total pagado, saldo y como queda frente al valor. */
+function armarPago(venta, pagos) {
+  const ultimo = pagos[pagos.length - 1];
+  const monedaVenta = venta.moneda || 'COP';
+  const pagado = Math.round(pagos.reduce((suma, uno) => suma + (uno.equivalente || 0), 0) * 100) / 100;
+  const huboConversion = pagos.some((uno) => uno.equivalente !== null && uno.moneda !== monedaVenta);
+  const margen = huboConversion ? venta.valor * TOLERANCIA_AL_CONVERTIR : 0;
+  const saldoExacto = Math.round((venta.valor - pagado) * 100) / 100;
+  const saldo = Math.abs(saldoExacto) <= margen ? 0 : saldoExacto;
+  let comparacion = saldo === 0 ? 'coincide' : saldo > 0 ? 'pago menor' : 'pago mayor';
+  if (ultimo.valor === null) comparacion = 'valor no legible';
+  else if (ultimo.equivalente === null) comparacion = 'moneda distinta';
+  const directa = compararConMoneda(venta, ultimo.valor, ultimo.moneda);
+  return {
+    ...ultimo, valor_esperado: pagos.length > 1 ? null : directa.esperado, moneda_venta: monedaVenta, valor_venta: venta.valor,
+    tasa: huboConversion ? venta.tasa : null, comparacion, diferencia: pagos.length > 1 ? null : directa.diferencia, pagos, pagado, saldo,
+  };
+}
+
+/** Quita un soporte registrado por error (por ejemplo, un comprobante duplicado) y recalcula el saldo. */
+async function eliminarPago(env, datos, ahora) {
+  const venta = await porId(env, datos.id);
+  const pagos = venta.pago?.pagos || [];
+  const indice = Number(datos.indice);
+  if (!Number.isInteger(indice) || indice < 0 || indice >= pagos.length) throw new ErrorDeUso('Ese soporte no existe');
+  const restantes = pagos.filter((_, i) => i !== indice);
+  const cambios = restantes.length
+    ? { pago: armarPago(venta, restantes), estado_pago: PAGO.POR_CONFIRMAR }
+    : { pago: null, estado_pago: PAGO.SIN_SOPORTE };
+  return { ok: true, venta: await guardar(env, venta, cambios, ahora, `Soporte de pago ${indice + 1} eliminado a mano; hay que volver a confirmar el pago`) };
+}
+
 /**
  * Registra un soporte de pago. Un cliente puede pagar en varios abonos: cada soporte se suma a los
  * anteriores y el saldo es lo que falta para completar el valor de la venta.
@@ -278,20 +317,15 @@ async function guardarPago(env, venta, datos, ahora) {
     medio: texto(datos.medio), referencia: texto(datos.referencia), pagador: texto(datos.pagador), destino: texto(datos.destino),
     observaciones: texto(datos.observaciones), archivo: texto(datos.archivo_url), recibido: ahora,
   };
+  // El mismo comprobante puede llegar dos veces (el cliente lo reenvia o escribe despues de enviarlo): no se suma de nuevo.
+  const repetido = anteriores.find((uno) => esElMismoSoporte(uno, soporte));
+  if (repetido) {
+    return { venta, comparacion: venta.pago.comparacion, diferencia: null, valor_esperado: venta.valor, moneda, saldo: venta.pago.saldo, moneda_venta: venta.moneda || 'COP', repetido: true };
+  }
   const pagos = [...anteriores, soporte];
-  const pagado = Math.round(pagos.reduce((suma, uno) => suma + (uno.equivalente || 0), 0) * 100) / 100;
-  const huboConversion = pagos.some((uno) => uno.equivalente !== null && uno.moneda !== (venta.moneda || 'COP'));
-  const margen = huboConversion ? venta.valor * TOLERANCIA_AL_CONVERTIR : 0;
-  const saldoExacto = Math.round((venta.valor - pagado) * 100) / 100;
-  const saldo = Math.abs(saldoExacto) <= margen ? 0 : saldoExacto;
-  let comparacion = saldo === 0 ? 'coincide' : saldo > 0 ? 'pago menor' : 'pago mayor';
-  if (valorPagado === null) comparacion = 'valor no legible';
-  else if (equivalente === null) comparacion = 'moneda distinta';
+  const pago = armarPago(venta, pagos);
+  const { comparacion, saldo } = pago;
   const directa = compararConMoneda(venta, valorPagado, moneda);
-  const pago = {
-    ...soporte, valor_esperado: anteriores.length ? null : directa.esperado, moneda_venta: venta.moneda || 'COP', valor_venta: venta.valor,
-    tasa: huboConversion ? venta.tasa : null, comparacion, diferencia: anteriores.length ? null : directa.diferencia, pagos, pagado, saldo,
-  };
   const hecho = `Soporte de pago ${pagos.length} recibido: ${comparacion}${saldo > 0 ? `, saldo pendiente ${saldo} ${venta.moneda || 'COP'}` : ''}`;
   const cambios = { pago, estado_pago: PAGO.POR_CONFIRMAR };
   let nota = hecho;
@@ -301,7 +335,7 @@ async function guardarPago(env, venta, datos, ahora) {
     nota += `. Pasa de prospecto a cliente con el código ${cambios.codigo_cliente}`;
   }
   const nueva = await guardar(env, venta, cambios, ahora, nota);
-  return { venta: nueva, comparacion, diferencia: pago.diferencia, valor_esperado: directa.esperado, moneda, saldo, moneda_venta: venta.moneda || 'COP' };
+  return { venta: nueva, comparacion, diferencia: pago.diferencia, valor_esperado: directa.esperado, moneda, saldo, moneda_venta: venta.moneda || 'COP', repetido: false };
 }
 
 /** Direcciones de los documentos que el cliente envio por el chat, una por tipo de documento. */
@@ -474,8 +508,8 @@ async function comoHerramienta(env, cuerpo, ahora) {
   if (!venta) return { ok: false, error: 'Este numero no tiene una venta registrada en el sistema' };
   if (entrada.accion === 'guardar_pago') {
     if (!(venta.valor > 0)) return { ok: false, error: 'Este cliente aun no tiene cotizacion: la asesora debe ponerle el valor antes de registrar el pago' };
-    const { comparacion, diferencia, valor_esperado, moneda, saldo, moneda_venta } = await guardarPago(env, venta, entrada, ahora);
-    return { ok: true, comparacion, diferencia, valor_esperado, moneda, saldo_pendiente: saldo, moneda_del_saldo: moneda_venta,
+    const { comparacion, diferencia, valor_esperado, moneda, saldo, moneda_venta, repetido } = await guardarPago(env, venta, entrada, ahora);
+    return { ok: true, ya_estaba_registrado: repetido, comparacion, diferencia, valor_esperado, moneda, saldo_pendiente: saldo, moneda_del_saldo: moneda_venta,
       enlace_autorizacion: venta.registro?.autorizacion ? null : venta.enlace, vars: { pago_comparacion: comparacion } };
   }
   if (entrada.accion === 'guardar_registro') {
@@ -489,6 +523,7 @@ async function comoPanel(env, cuerpo, ahora) {
   switch (cuerpo.accion) {
     case 'listar': return { ok: true, ventas: await todas(env), asesoras: [...TITULARES, REEMPLAZO], etapas: ETAPAS_MANUALES };
     case 'formulario_ver': return verFormulario(env, cuerpo);
+    case 'eliminar_pago': return eliminarPago(env, cuerpo, ahora);
     case 'editar_registro': return editarRegistro(env, cuerpo, ahora);
     case 'registrar_pago': {
       const venta = await porId(env, cuerpo.id);

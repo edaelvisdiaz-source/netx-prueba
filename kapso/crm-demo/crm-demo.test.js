@@ -388,3 +388,35 @@ test('al recibir el primer soporte el prospecto pasa a cliente con codigo y se v
   const { ventas } = await llamar(env, { accion: 'listar' });
   assert.deepEqual(ventas.map((una) => una.codigo_cliente).sort(), ['CL-0001', 'CL-0002']);
 });
+
+test('el mismo comprobante enviado dos veces no se suma dos veces', async () => {
+  const env = entornoDePrueba();
+  const { venta } = await llamar(env, { ...VENTA, valor: '500.000' });
+  const soporte = { accion: 'guardar_pago', valor: '120000', moneda: 'COP', medio: 'Nequi', referencia: 'M09198508', fecha: '2026-11-24 12:30' };
+  assert.equal((await llamar(env, desdeElChat('573001234567', soporte))).saldo_pendiente, 380000);
+  const otraVez = await llamar(env, desdeElChat('573001234567', { ...soporte, referencia: 'm09198508', observaciones: 'leido de nuevo' }));
+  assert.equal(otraVez.ya_estaba_registrado, true);
+  assert.equal(otraVez.saldo_pendiente, 380000);
+  const sinReferencia = await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '50000', moneda: 'COP', fecha: 'hoy 3 pm' }));
+  assert.equal(sinReferencia.saldo_pendiente, 330000);
+  assert.equal((await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '50000', moneda: 'COP', fecha: 'hoy 3 pm' }))).ya_estaba_registrado, true);
+  const { venta: final } = await llamar(env, { accion: 'ver', id: venta.id });
+  assert.equal(final.pago.pagos.length, 2);
+  assert.equal(final.pago.pagado, 170000);
+});
+
+test('se puede quitar un soporte registrado por error y el saldo se recalcula', async () => {
+  const env = entornoDePrueba();
+  const { venta } = await llamar(env, { ...VENTA, valor: '500.000' });
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '120000', referencia: 'A1' }));
+  await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '120000', referencia: 'A2' }));
+  assert.equal((await llamar(env, { accion: 'eliminar_pago', id: venta.id, indice: 5 })).ok, false);
+  const corregida = (await llamar(env, { accion: 'eliminar_pago', id: venta.id, indice: 1 })).venta;
+  assert.equal(corregida.pago.pagos.length, 1);
+  assert.equal(corregida.pago.saldo, 380000);
+  assert.equal(corregida.estado_pago, 'Por confirmar');
+  const vacia = (await llamar(env, { accion: 'eliminar_pago', id: venta.id, indice: 0 })).venta;
+  assert.equal(vacia.pago, null);
+  assert.equal(vacia.estado_pago, 'Sin soporte');
+  assert.equal(vacia.codigo_cliente, 'CL-0001');
+});

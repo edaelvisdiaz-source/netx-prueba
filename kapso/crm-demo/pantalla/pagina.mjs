@@ -251,7 +251,8 @@ function detalle(v) {
           ['Total pagado', pago.pagos && pesos(pago.pagado, pago.moneda_venta)], ['Saldo pendiente', pago.pagos && etiqueta(pesos(pago.saldo, pago.moneda_venta), pago.saldo > 0 ? 'alerta' : 'ok')]]),
           pago.pagos && [h('label', null, 'Soportes de pago del cliente'), h('ul', { clase: 'historial' }, pago.pagos.map((uno, i) => h('li', null,
             'Soporte ' + (i + 1) + ': ' + pesos(uno.valor, uno.moneda) + (uno.referencia ? ' · ref. ' + uno.referencia : '') + ' · ' + fecha(uno.recibido) + ' ',
-            String(uno.archivo || '').startsWith('https://') && h('a', { href: uno.archivo, target: '_blank', rel: 'noopener noreferrer' }, 'Ver archivo'))))],
+            String(uno.archivo || '').startsWith('https://') && h('a', { href: uno.archivo, target: '_blank', rel: 'noopener noreferrer' }, 'Ver archivo'), ' ',
+            h('button', { clase: 'mal', alClick: () => { if (confirm('¿Quitar este soporte? El saldo se recalcula y hay que confirmar el pago de nuevo.')) ejecutar('eliminar_pago', { id: v.id, indice: i }, error); } }, 'Quitar'))))],
           v.estado_pago !== 'Confirmado' && h('div', { clase: 'acciones' },
             h('button', { clase: 'bien', alClick: () => ejecutar('confirmar_pago', { id: v.id, confirmado: true }, error) }, 'Contabilidad: confirmar lo recibido (' + pesos(pago.pagado, pago.moneda_venta) + ')'),
             h('button', { clase: 'mal', alClick: () => ejecutar('confirmar_pago', { id: v.id, confirmado: false }, error) }, 'Rechazar'))]
