@@ -62,3 +62,32 @@ Reglas acordadas:
 - Si un documento sale borroso se le dice al cliente en el momento y elige reenviarlo o
   continuar; a la asesora le queda el aviso. Basta con que sea legible.
 - El soporte de pago se lee y queda pendiente: quien confirma el pago es Contabilidad, en el CRM.
+
+## Sistema demo de apostillas (`crm-demo`)
+
+Sistema mínimo para ensayar el flujo de WhatsApp mientras el CRM real no está en línea. Guarda
+ventas, soportes de pago y registros en la base de datos del proyecto de Kapso (tabla
+`demo_ventas`). No es el CRM: cuando exista, los agentes apuntan allá y esto se borra.
+
+| Pieza | Identificador |
+|---|---|
+| Función `Sistema demo de apostillas` (privada) | `3424658c-8c01-49c4-b351-f5608bfde420` |
+| Automatización `Pago y registro de clientes` (borrador) | `0aff3dc7-096e-4253-a645-6df56db9287e` |
+
+La automatización tiene dos agentes: `pago` (modelo robusto; consulta la venta por el número de
+WhatsApp, lee el soporte y lo guarda; la comparación de valores la hace la función, no el
+modelo) y `registro` (modelo económico; lee título, notas y cédula y guarda el registro).
+Ninguno confirma pagos: eso lo hace Contabilidad con `confirmar_pago`.
+
+Acciones con la llave de Kapso (`POST /functions/<id>/invoke`):
+
+- `{"accion":"crear_venta","telefono":"57300...","servicio":"...","valor":"1.250.000"}`
+  (la asesora se asigna por turnos; `asesora` la fija a mano)
+- `{"accion":"listar"}`, `{"accion":"ver","id":"..."}`, `{"accion":"eliminar","id":"..."}`
+- `{"accion":"confirmar_pago","id":"...","confirmado":true,"nota":"..."}`
+
+Kapso no sirve páginas desde las funciones (solo `POST`, con una política que bloquea
+formularios y encabezados propios), así que la pantalla del sistema debe vivir en otro lado y
+llamar a un segundo despliegue público del mismo código, protegido con el secreto `CLAVE_PANEL`.
+
+Pruebas: `node --test kapso/crm-demo/crm-demo.test.js`

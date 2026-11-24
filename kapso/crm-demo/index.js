@@ -1,0 +1,254 @@
+// Sistema de demostracion de apostillas: ventas, soportes de pago y registros de clientes.
+// Sirve solo para ensayar el flujo de WhatsApp mientras el CRM real no esta en linea.
+//
+// Se despliega dos veces con el mismo codigo:
+//  - Privada (sin secreto CLAVE_PANEL): la usan los agentes del flujo como herramienta y las
+//    llamadas con la llave de Kapso.
+//  - Publica (con secreto CLAVE_PANEL): la usa la pantalla del sistema. Exige la clave en el
+//    encabezado X-Demo-Token y no acepta llamadas de herramienta.
+//
+// Kapso exige una funcion `handler(request, env)` sin `export`.
+
+const TITULARES = ['Estefania Diaz', 'Melissa Orellano'];
+const REEMPLAZO = 'Andrea Martinez';
+const DIA_DEL_REEMPLAZO = 'Sat';
+const ZONA_HORARIA = 'America/Bogota';
+const PAGO = { SIN_SOPORTE: 'Sin soporte', POR_CONFIRMAR: 'Por confirmar', CONFIRMADO: 'Confirmado', RECHAZADO: 'Rechazado' };
+const REGISTRO = { PENDIENTE: 'Pendiente', FALTAN: 'Faltan documentos', COMPLETO: 'Completo' };
+const DOCUMENTOS_OBLIGATORIOS = ['titulo', 'notas', 'cedula'];
+const MAXIMO_TEXTO = 500;
+const MAXIMO_LISTA = 200;
+const DIGITOS_PARA_COMPARAR = 10;
+const TABLA = `CREATE TABLE IF NOT EXISTS demo_ventas (
+  id TEXT PRIMARY KEY, creada TEXT NOT NULL, actualizada TEXT NOT NULL, cliente TEXT, telefono TEXT NOT NULL,
+  servicio TEXT NOT NULL, valor INTEGER NOT NULL, asesora TEXT NOT NULL, estado_pago TEXT NOT NULL,
+  estado_registro TEXT NOT NULL, pago TEXT, registro TEXT, historial TEXT NOT NULL)`;
+
+class ErrorDeUso extends Error {}
+
+function json(cuerpo, estado = 200) {
+  return new Response(JSON.stringify(cuerpo), { status: estado, headers: { 'Content-Type': 'application/json' } });
+}
+
+function texto(valor) {
+  return valor === undefined || valor === null ? '' : String(valor).trim().slice(0, MAXIMO_TEXTO);
+}
+
+function soloDigitos(valor) {
+  return texto(valor).replace(/\D/g, '');
+}
+
+/** Dos telefonos son el mismo si coinciden sus ultimos diez digitos (sin indicativo de pais). */
+function mismoTelefono(a, b) {
+  const x = soloDigitos(a).slice(-DIGITOS_PARA_COMPARAR);
+  const y = soloDigitos(b).slice(-DIGITOS_PARA_COMPARAR);
+  return x.length >= 7 && x === y;
+}
+
+/** Convierte "$ 1.250.000", "1,250,000.00" o 1250000 en un numero entero de pesos. */
+function leerValor(valor) {
+  if (typeof valor === 'number') return Number.isFinite(valor) ? Math.round(valor) : null;
+  const limpio = texto(valor).replace(/[^\d.,]/g, '');
+  if (!/\d/.test(limpio)) return null;
+  const ultimoPunto = limpio.lastIndexOf('.');
+  const ultimaComa = limpio.lastIndexOf(',');
+  const separador = Math.max(ultimoPunto, ultimaComa);
+  const decimales = separador === -1 ? 0 : limpio.length - separador - 1;
+  const hayDosTipos = ultimoPunto !== -1 && ultimaComa !== -1;
+  const unSoloSeparador = limpio.split(/[.,]/).length === 2;
+  // Un separador seguido de tres digitos es de miles; con uno o dos digitos, es decimal.
+  const esDecimal = decimales > 0 && decimales !== 3 && (hayDosTipos || unSoloSeparador);
+  const entero = esDecimal ? limpio.slice(0, separador) : limpio;
+  const numero = Number(entero.replace(/[.,]/g, ''));
+  return Number.isFinite(numero) ? numero : null;
+}
+
+function compararPago(valorEsperado, valorPagado) {
+  if (valorPagado === null) return { resultado: 'valor no legible', diferencia: null };
+  const diferencia = valorPagado - valorEsperado;
+  if (diferencia === 0) return { resultado: 'coincide', diferencia };
+  return { resultado: diferencia < 0 ? 'pago menor' : 'pago mayor', diferencia };
+}
+
+function estadoDelRegistro(recibidos, correo) {
+  const tiene = new Set(recibidos.map((nombre) => nombre.toLowerCase()));
+  const faltantes = DOCUMENTOS_OBLIGATORIOS.filter((nombre) => !tiene.has(nombre));
+  if (!correo) faltantes.push('correo');
+  return { estado: faltantes.length ? REGISTRO.FALTAN : REGISTRO.COMPLETO, faltantes };
+}
+
+function elegirAsesora(diaDeLaSemana, turno) {
+  if (diaDeLaSemana === DIA_DEL_REEMPLAZO) return { asesora: REEMPLAZO, turno };
+  return { asesora: TITULARES[turno % TITULARES.length], turno: turno + 1 };
+}
+
+function diaLocal(fecha) {
+  return new Intl.DateTimeFormat('en-US', { timeZone: ZONA_HORARIA, weekday: 'short' }).format(fecha);
+}
+
+function lista(valor) {
+  const elementos = Array.isArray(valor) ? valor : texto(valor).split(',');
+  return elementos.map(texto).filter(Boolean).slice(0, 20);
+}
+
+function telefonoDelChat(cuerpo) {
+  const contexto = cuerpo.execution_context?.context || {};
+  const whatsapp = cuerpo.whatsapp_context || {};
+  return soloDigitos(
+    contexto.phone_number || whatsapp.phone_number || whatsapp.conversation?.phone_number || whatsapp.contact?.phone_number || whatsapp.contact?.wa_id,
+  );
+}
+
+function aVenta(fila) {
+  return { ...fila, pago: fila.pago ? JSON.parse(fila.pago) : null, registro: fila.registro ? JSON.parse(fila.registro) : null, historial: JSON.parse(fila.historial) };
+}
+
+function conHistorial(venta, ahora, hecho) {
+  return [...venta.historial, { fecha: ahora, hecho }].slice(-50);
+}
+
+async function todas(env) {
+  const { results } = await env.DB.prepare('SELECT * FROM demo_ventas ORDER BY creada DESC LIMIT ?').bind(MAXIMO_LISTA).all();
+  return results.map(aVenta);
+}
+
+async function porId(env, id) {
+  const fila = await env.DB.prepare('SELECT * FROM demo_ventas WHERE id = ?').bind(texto(id)).first();
+  if (!fila) throw new ErrorDeUso('No existe esa venta');
+  return aVenta(fila);
+}
+
+/** La venta mas reciente de ese telefono; es la que el cliente esta tramitando. */
+async function porTelefono(env, telefono) {
+  return (await todas(env)).find((venta) => mismoTelefono(venta.telefono, telefono)) || null;
+}
+
+async function guardar(env, venta, cambios, ahora, hecho) {
+  const nueva = { ...venta, ...cambios, actualizada: ahora, historial: conHistorial(venta, ahora, hecho) };
+  await env.DB.prepare('UPDATE demo_ventas SET actualizada = ?, cliente = ?, estado_pago = ?, estado_registro = ?, pago = ?, registro = ?, historial = ? WHERE id = ?')
+    .bind(nueva.actualizada, nueva.cliente, nueva.estado_pago, nueva.estado_registro, nueva.pago ? JSON.stringify(nueva.pago) : null,
+      nueva.registro ? JSON.stringify(nueva.registro) : null, JSON.stringify(nueva.historial), nueva.id)
+    .run();
+  return nueva;
+}
+
+async function crearVenta(env, datos, ahora) {
+  const telefono = soloDigitos(datos.telefono);
+  const valor = leerValor(datos.valor);
+  const servicio = texto(datos.servicio);
+  if (telefono.length < 10) throw new ErrorDeUso('El telefono debe tener al menos 10 digitos');
+  if (!valor || valor <= 0) throw new ErrorDeUso('El valor de la venta debe ser mayor que cero');
+  if (!servicio) throw new ErrorDeUso('Falta el servicio');
+  let asesora = texto(datos.asesora);
+  if (!asesora) {
+    const turno = Number(await env.KV.get('demo:turno')) || 0;
+    const decision = elegirAsesora(diaLocal(new Date(ahora)), turno);
+    asesora = decision.asesora;
+    await env.KV.put('demo:turno', String(decision.turno));
+  }
+  const venta = {
+    id: crypto.randomUUID(), creada: ahora, actualizada: ahora, cliente: texto(datos.cliente), telefono, servicio, valor, asesora,
+    estado_pago: PAGO.SIN_SOPORTE, estado_registro: REGISTRO.PENDIENTE, pago: null, registro: null,
+    historial: [{ fecha: ahora, hecho: `Venta creada y asignada a ${asesora}` }],
+  };
+  await env.DB.prepare('INSERT INTO demo_ventas (id, creada, actualizada, cliente, telefono, servicio, valor, asesora, estado_pago, estado_registro, pago, registro, historial) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
+    .bind(venta.id, venta.creada, venta.actualizada, venta.cliente, venta.telefono, venta.servicio, venta.valor, venta.asesora, venta.estado_pago, venta.estado_registro, null, null, JSON.stringify(venta.historial))
+    .run();
+  return venta;
+}
+
+async function guardarPago(env, venta, datos, ahora) {
+  if (venta.estado_pago === PAGO.CONFIRMADO) throw new ErrorDeUso('El pago de esta venta ya fue confirmado por Contabilidad');
+  const valorPagado = leerValor(datos.valor);
+  const comparacion = compararPago(venta.valor, valorPagado);
+  const pago = {
+    fecha: texto(datos.fecha), valor: valorPagado, moneda: texto(datos.moneda) || 'COP', medio: texto(datos.medio), referencia: texto(datos.referencia),
+    pagador: texto(datos.pagador), destino: texto(datos.destino), observaciones: texto(datos.observaciones), archivo: texto(datos.archivo_url),
+    valor_esperado: venta.valor, comparacion: comparacion.resultado, diferencia: comparacion.diferencia, recibido: ahora,
+  };
+  const nueva = await guardar(env, venta, { pago, estado_pago: PAGO.POR_CONFIRMAR }, ahora, `Soporte de pago recibido: ${comparacion.resultado}`);
+  return { venta: nueva, comparacion: comparacion.resultado, diferencia: comparacion.diferencia, valor_esperado: venta.valor };
+}
+
+async function guardarRegistro(env, venta, datos, ahora) {
+  const recibidos = lista(datos.documentos_recibidos);
+  const correo = texto(datos.correo).toLowerCase();
+  if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) throw new ErrorDeUso('El correo no tiene un formato valido');
+  const { estado, faltantes } = estadoDelRegistro(recibidos, correo);
+  const registro = {
+    nombre: texto(datos.nombre), cedula: soloDigitos(datos.cedula), fecha_nacimiento: texto(datos.fecha_nacimiento), universidad: texto(datos.universidad),
+    titulo: texto(datos.titulo), fecha_grado: texto(datos.fecha_grado), codigo_verificacion: texto(datos.codigo_verificacion), correo,
+    documentos_recibidos: recibidos, documentos_faltantes: faltantes, legibilidad: texto(datos.legibilidad), diferencias: texto(datos.diferencias),
+    archivos: lista(datos.archivos), recibido: ahora,
+  };
+  const cambios = { registro, estado_registro: estado, cliente: registro.nombre || venta.cliente };
+  const nueva = await guardar(env, venta, cambios, ahora, estado === REGISTRO.COMPLETO ? 'Registro completo' : `Registro con faltantes: ${faltantes.join(', ')}`);
+  return { venta: nueva, estado, faltantes };
+}
+
+async function confirmarPago(env, datos, ahora) {
+  const venta = await porId(env, datos.id);
+  if (!venta.pago) throw new ErrorDeUso('Esta venta todavia no tiene soporte de pago');
+  const estado = datos.confirmado ? PAGO.CONFIRMADO : PAGO.RECHAZADO;
+  const nota = texto(datos.nota);
+  return guardar(env, venta, { estado_pago: estado }, ahora, `Contabilidad: pago ${estado.toLowerCase()}${nota ? ` (${nota})` : ''}`);
+}
+
+/** Lo que el agente puede saber de una venta: nada de datos de otros clientes. */
+function paraElAgente(venta) {
+  if (!venta) return { encontrada: false };
+  return { encontrada: true, servicio: venta.servicio, valor_esperado: venta.valor, asesora: venta.asesora, estado_pago: venta.estado_pago, estado_registro: venta.estado_registro };
+}
+
+async function comoHerramienta(env, cuerpo, ahora) {
+  const entrada = cuerpo.input;
+  const venta = await porTelefono(env, telefonoDelChat(cuerpo));
+  if (entrada.accion === 'consultar_venta') return paraElAgente(venta);
+  if (!venta) return { ok: false, error: 'Este numero no tiene una venta registrada en el sistema' };
+  if (entrada.accion === 'guardar_pago') {
+    const { comparacion, diferencia, valor_esperado } = await guardarPago(env, venta, entrada, ahora);
+    return { ok: true, comparacion, diferencia, valor_esperado, vars: { pago_comparacion: comparacion } };
+  }
+  if (entrada.accion === 'guardar_registro') {
+    const { estado, faltantes } = await guardarRegistro(env, venta, entrada, ahora);
+    return { ok: true, estado, faltantes, asesora: venta.asesora, vars: { registro_estado: estado } };
+  }
+  throw new ErrorDeUso('Accion de herramienta desconocida');
+}
+
+async function comoPanel(env, cuerpo, ahora) {
+  switch (cuerpo.accion) {
+    case 'listar': return { ok: true, ventas: await todas(env), asesoras: [...TITULARES, REEMPLAZO] };
+    case 'crear_venta': return { ok: true, venta: await crearVenta(env, cuerpo, ahora) };
+    case 'ver': return { ok: true, venta: await porId(env, cuerpo.id) };
+    case 'confirmar_pago': return { ok: true, venta: await confirmarPago(env, cuerpo, ahora) };
+    case 'eliminar':
+      await porId(env, cuerpo.id);
+      await env.DB.prepare('DELETE FROM demo_ventas WHERE id = ?').bind(texto(cuerpo.id)).run();
+      return { ok: true };
+    default: throw new ErrorDeUso('Accion desconocida');
+  }
+}
+
+function clavesIguales(a, b) {
+  if (a.length !== b.length) return false;
+  let diferencia = 0;
+  for (let i = 0; i < a.length; i += 1) diferencia |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diferencia === 0;
+}
+
+async function handler(request, env) {
+  const cuerpo = await request.json().catch(() => ({}));
+  const esPublica = Boolean(env.CLAVE_PANEL);
+  if (esPublica && !clavesIguales(request.headers.get('x-demo-token') || '', env.CLAVE_PANEL)) return json({ ok: false, error: 'Clave incorrecta' }, 401);
+  const ahora = new Date().toISOString();
+  try {
+    await env.DB.prepare(TABLA).run();
+    const esHerramienta = cuerpo.input && typeof cuerpo.input === 'object';
+    if (esHerramienta && esPublica) throw new ErrorDeUso('Accion desconocida');
+    return json(esHerramienta ? await comoHerramienta(env, cuerpo, ahora) : await comoPanel(env, cuerpo, ahora));
+  } catch (error) {
+    if (error instanceof ErrorDeUso) return json({ ok: false, error: error.message }, 200);
+    return json({ ok: false, error: 'Error interno del sistema de demostracion' }, 500);
+  }
+}

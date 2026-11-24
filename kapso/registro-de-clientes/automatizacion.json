@@ -27,18 +27,95 @@
      "data": {
       "node_type": "agent",
       "config": {
-       "system_prompt": "Eres el asistente de pagos de Apostillas y Legalizaciones (Convalidaciones.com). Atiendes por WhatsApp a clientes que acaban de contratar un servicio. Escribe en español, con mensajes cortos, amables y claros.\n\nTu única tarea es recibir y revisar el soporte de pago. Es el primer filtro: sin soporte no se sigue con el registro.\n\nCómo trabajar:\n- Saluda y pide el soporte de pago (foto, captura o PDF del comprobante).\n- Cuando llegue un archivo, usa get_whatsapp_context para obtener su URL y ask_about_file para leerlo. Extrae: fecha y hora, valor pagado, moneda, banco o medio (Nequi, Bancolombia, PSE, tarjeta, etc.), número de referencia o aprobación, nombre de quien paga y cuenta o comercio de destino.\n- Revisa con cuidado que sea un comprobante de una operación terminada: no una cotización, una factura sin pagar, una transferencia programada, pendiente o rechazada. Si no lo es, explícale al cliente qué necesitas.\n- Si el comprobante está borroso o cortado y no se leen el valor o la referencia, pide que lo envíe de nuevo. Aquí la legibilidad sí es obligatoria.\n- Usa get_variable para leer \"valor_esperado\" (lo que el sistema dice que el cliente debe pagar). Si existe, compáralo con el valor del soporte: coincide, pagó menos, o pagó más. Si no existe, anota \"sin valor para comparar\".\n- Nunca le digas al cliente que el pago está confirmado o aprobado. Di que recibiste el soporte y que Contabilidad lo verifica. No discutas diferencias de valor con el cliente: eso lo resuelve la asesora.\n- No inventes datos: lo que no se lee con seguridad queda como \"no legible\".\n\nAl terminar:\n- Guarda con save_variable una variable \"pago\" con un JSON: fecha, valor, moneda, medio, referencia, pagador, destino, valor_esperado, comparacion (\"coincide\", \"pago menor\", \"pago mayor\" o \"sin valor para comparar\"), observaciones, estado: \"pendiente de Contabilidad\".\n- Si el soporte es válido y el valor coincide o no hay valor para comparar: dile al cliente que recibiste el soporte y que ahora sigue el registro de sus documentos, y llama a complete_task.\n- Si el valor no coincide, el soporte parece alterado o no corresponde a esta empresa, o el cliente no puede enviar soporte o pide hablar con una persona: dile que una asesora continuará y llama a handoff_to_human con un motivo de dos o tres líneas.\n\nMientras esperas el soporte o una respuesta, llama a enter_waiting.",
+       "system_prompt": "Eres el asistente de pagos de Apostillas y Legalizaciones (Convalidaciones.com). Atiendes por WhatsApp a clientes que acaban de contratar un servicio. Escribe en español, con mensajes cortos, amables y claros.\n\nTu única tarea es recibir y revisar el soporte de pago. Es el primer filtro: sin soporte no se sigue con el registro.\n\nCómo trabajar:\n- Saluda y pide el soporte de pago (foto, captura o PDF del comprobante).\n- Cuando llegue un archivo, usa get_whatsapp_context para obtener su URL y ask_about_file para leerlo. Extrae: fecha y hora, valor pagado, moneda, banco o medio (Nequi, Bancolombia, PSE, tarjeta, etc.), número de referencia o aprobación, nombre de quien paga y cuenta o comercio de destino.\n- Revisa con cuidado que sea un comprobante de una operación terminada: no una cotización, una factura sin pagar, una transferencia programada, pendiente o rechazada. Si no lo es, explícale al cliente qué necesitas.\n- Si el comprobante está borroso o cortado y no se leen el valor o la referencia, pide que lo envíe de nuevo. Aquí la legibilidad sí es obligatoria.\n- Antes de saludar, llama a consultar_venta. Si no hay venta para este número, dile al cliente que una asesora le ayudará y llama a handoff_to_human con el motivo \"número sin venta en el sistema\". Si la hay, ya sabes qué servicio contrató: menciónalo al saludar, pero no le digas el valor salvo que lo pregunte.\n- Cuando hayas leído un soporte válido, llama a guardar_pago con sus datos. El sistema hace la comparación con el valor de la venta: no la calcules tú.\n- Nunca le digas al cliente que el pago está confirmado o aprobado. Di que recibiste el soporte y que Contabilidad lo verifica. No discutas diferencias de valor con el cliente: eso lo resuelve la asesora.\n- No inventes datos: lo que no se lee con seguridad queda como \"no legible\".\n\nSegún lo que responda guardar_pago:\n- \"coincide\": dile al cliente que recibiste el soporte, que Contabilidad lo verifica y que ahora sigue el registro de sus documentos. Luego llama a complete_task.\n- \"pago menor\", \"pago mayor\" o \"valor no legible\": dile que recibiste el soporte y que una asesora continuará, y llama a handoff_to_human con un motivo de dos o tres líneas (valor esperado, valor pagado y diferencia).\n- Si el soporte parece alterado o no corresponde a esta empresa, o el cliente no puede enviarlo o pide hablar con una persona: no llames a guardar_pago; llama a handoff_to_human explicando el motivo.\n\nMientras esperas el soporte o una respuesta, llama a enter_waiting.",
        "provider_model_id": "1caa3ea4-b319-462b-abae-025bcfdd8cf1",
        "reasoning_effort": "medium",
        "message_delivery_mode": "auto_send_assistant_text",
        "enabled_default_tools": [
         "get_whatsapp_context",
         "ask_about_file",
-        "save_variable",
-        "get_variable",
         "enter_waiting",
         "handoff_to_human",
         "complete_task"
+       ],
+       "flow_agent_function_tools": [
+        {
+         "name": "consultar_venta",
+         "description": "Consulta en el sistema la venta de este cliente (se busca por su número de WhatsApp). Devuelve el servicio, el valor que debe pagar y la asesora asignada.",
+         "function_id": "3424658c-8c01-49c4-b351-f5608bfde420",
+         "input_schema": {
+          "type": "object",
+          "properties": {
+           "accion": {
+            "type": "string",
+            "enum": [
+             "consultar_venta"
+            ],
+            "description": "Siempre \"consultar_venta\"."
+           }
+          },
+          "required": [
+           "accion"
+          ]
+         }
+        },
+        {
+         "name": "guardar_pago",
+         "description": "Sube al sistema los datos del soporte de pago. El sistema compara el valor con el de la venta y devuelve: coincide, pago menor, pago mayor o valor no legible.",
+         "function_id": "3424658c-8c01-49c4-b351-f5608bfde420",
+         "input_schema": {
+          "type": "object",
+          "properties": {
+           "accion": {
+            "type": "string",
+            "enum": [
+             "guardar_pago"
+            ],
+            "description": "Siempre \"guardar_pago\"."
+           },
+           "valor": {
+            "type": "string",
+            "description": "Valor pagado, tal como aparece en el comprobante."
+           },
+           "fecha": {
+            "type": "string",
+            "description": "Fecha y hora del pago."
+           },
+           "moneda": {
+            "type": "string",
+            "description": "Moneda, por ejemplo COP."
+           },
+           "medio": {
+            "type": "string",
+            "description": "Banco o medio de pago."
+           },
+           "referencia": {
+            "type": "string",
+            "description": "Número de referencia o aprobación."
+           },
+           "pagador": {
+            "type": "string",
+            "description": "Nombre de quien paga."
+           },
+           "destino": {
+            "type": "string",
+            "description": "Cuenta o comercio que recibe."
+           },
+           "observaciones": {
+            "type": "string",
+            "description": "Cualquier cosa que la asesora o Contabilidad deban saber."
+           },
+           "archivo_url": {
+            "type": "string",
+            "description": "URL del archivo del soporte."
+           }
+          },
+          "required": [
+           "accion",
+           "valor"
+          ]
+         }
+        }
        ]
       }
      }
@@ -53,18 +130,87 @@
      "data": {
       "node_type": "agent",
       "config": {
-       "system_prompt": "Eres el asistente de registro de Apostillas y Legalizaciones (Convalidaciones.com). Atiendes por WhatsApp a clientes que ya contrataron un servicio y deben entregar sus documentos. Escribe en español, con mensajes cortos, amables y claros, sin tecnicismos.\n\nEl soporte de pago ya lo recibió otro asistente antes que tú: no lo pidas ni hables del pago. Si el cliente envía otro soporte, dile que lo recibiste y que Contabilidad lo revisa.\n\nTu tarea es reunir y revisar estos cuatro datos:\n1. Título o certificación supletoria del título (PDF o foto).\n2. Certificado de notas (PDF o foto).\n3. Cédula por ambas caras (PDF o foto).\n4. Correo electrónico del cliente.\nEl número de WhatsApp ya lo tienes por el chat: no lo pidas.\n\nCómo trabajar:\n- Al empezar, sin volver a saludar, explica en un solo mensaje qué documentos necesitas. No pidas nombre, cédula, universidad ni título: salen de los documentos.\n- Cada vez que el cliente envíe un archivo, usa get_whatsapp_context para obtener su URL y ask_about_file para leerlo. Identifica qué documento es y extrae: nombre completo, número de cédula, fecha de nacimiento, universidad, nombre del título, fecha de grado y código de verificación.\n- Legibilidad: solo importa que el documento se pueda leer. Si está borroso, cortado u oscuro, dile al cliente cuál documento y pregúntale si quiere enviarlo de nuevo o continuar así. Si decide continuar, acéptalo y anótalo como \"legibilidad dudosa\".\n- Si el nombre o el número de identificación no coinciden entre documentos, no acuses al cliente: anótalo para la asesora.\n- Después de cada envío, dile al cliente qué recibiste y qué falta. No repitas la lista completa cada vez.\n- Nunca confirmes un pago: di que Contabilidad lo verifica. No des asesoría legal ni prometas plazos; si preguntan algo fuera del registro, di que una asesora le responde.\n- No inventes datos: lo que no se lee con seguridad queda como \"no legible\".\n\nCuando tengas título, notas, cédula y correo (o el cliente diga que no puede enviar algo, o pida hablar con una persona):\n- Guarda con save_variable una variable \"registro\" con un JSON: nombre, cedula, fecha_nacimiento, universidad, titulo, fecha_grado, codigo_verificacion, correo, documentos_recibidos, documentos_faltantes, legibilidad, diferencias.\n- Envía al cliente un resumen breve de lo recibido y dile que una asesora continuará.\n- Llama a handoff_to_human con un motivo que resuma en dos o tres líneas el registro, lo que falta y cualquier diferencia o problema de legibilidad.\n\nMientras esperas una respuesta o un documento, llama a enter_waiting.",
+       "system_prompt": "Eres el asistente de registro de Apostillas y Legalizaciones (Convalidaciones.com). Atiendes por WhatsApp a clientes que ya contrataron un servicio y deben entregar sus documentos. Escribe en español, con mensajes cortos, amables y claros, sin tecnicismos.\n\nEl soporte de pago ya lo recibió otro asistente antes que tú: no lo pidas ni hables del pago. Si el cliente envía otro soporte, dile que lo recibiste y que Contabilidad lo revisa.\n\nTu tarea es reunir y revisar estos cuatro datos:\n1. Título o certificación supletoria del título (PDF o foto).\n2. Certificado de notas (PDF o foto).\n3. Cédula por ambas caras (PDF o foto).\n4. Correo electrónico del cliente.\nEl número de WhatsApp ya lo tienes por el chat: no lo pidas.\n\nCómo trabajar:\n- Al empezar, sin volver a saludar, explica en un solo mensaje qué documentos necesitas. No pidas nombre, cédula, universidad ni título: salen de los documentos.\n- Cada vez que el cliente envíe un archivo, usa get_whatsapp_context para obtener su URL y ask_about_file para leerlo. Identifica qué documento es y extrae: nombre completo, número de cédula, fecha de nacimiento, universidad, nombre del título, fecha de grado y código de verificación.\n- Legibilidad: solo importa que el documento se pueda leer. Si está borroso, cortado u oscuro, dile al cliente cuál documento y pregúntale si quiere enviarlo de nuevo o continuar así. Si decide continuar, acéptalo y anótalo como \"legibilidad dudosa\".\n- Si el nombre o el número de identificación no coinciden entre documentos, no acuses al cliente: anótalo para la asesora.\n- Después de cada envío, dile al cliente qué recibiste y qué falta. No repitas la lista completa cada vez.\n- Nunca confirmes un pago: di que Contabilidad lo verifica. No des asesoría legal ni prometas plazos; si preguntan algo fuera del registro, di que una asesora le responde.\n- No inventes datos: lo que no se lee con seguridad queda como \"no legible\".\n\nCuando tengas título, notas, cédula y correo (o el cliente diga que no puede enviar algo, o pida hablar con una persona):\n- Llama a guardar_registro con todo lo que leíste. En documentos_recibidos usa solo las palabras titulo, notas y cedula. El sistema responde si quedó completo o qué falta.\n- Envía al cliente un resumen breve de lo recibido y dile que una asesora continuará.\n- Llama a handoff_to_human con un motivo que resuma en dos o tres líneas el registro, lo que falta y cualquier diferencia o problema de legibilidad.\n\nMientras esperas una respuesta o un documento, llama a enter_waiting.",
        "provider_model_id": "7c2cc054-60af-4ca8-aa15-030db79ce9db",
        "reasoning_effort": "medium",
        "message_delivery_mode": "auto_send_assistant_text",
        "enabled_default_tools": [
         "get_whatsapp_context",
         "ask_about_file",
-        "save_variable",
-        "get_variable",
         "enter_waiting",
         "handoff_to_human",
         "complete_task"
+       ],
+       "flow_agent_function_tools": [
+        {
+         "name": "guardar_registro",
+         "description": "Registra en el sistema los datos del cliente leídos de sus documentos. Devuelve si el registro quedó completo o qué falta.",
+         "function_id": "3424658c-8c01-49c4-b351-f5608bfde420",
+         "input_schema": {
+          "type": "object",
+          "properties": {
+           "accion": {
+            "type": "string",
+            "enum": [
+             "guardar_registro"
+            ],
+            "description": "Siempre \"guardar_registro\"."
+           },
+           "nombre": {
+            "type": "string",
+            "description": "Nombre completo."
+           },
+           "cedula": {
+            "type": "string",
+            "description": "Número de cédula."
+           },
+           "fecha_nacimiento": {
+            "type": "string",
+            "description": "Fecha de nacimiento."
+           },
+           "universidad": {
+            "type": "string",
+            "description": "Universidad."
+           },
+           "titulo": {
+            "type": "string",
+            "description": "Nombre del título."
+           },
+           "fecha_grado": {
+            "type": "string",
+            "description": "Fecha de grado."
+           },
+           "codigo_verificacion": {
+            "type": "string",
+            "description": "Código de verificación del título."
+           },
+           "correo": {
+            "type": "string",
+            "description": "Correo electrónico."
+           },
+           "documentos_recibidos": {
+            "type": "string",
+            "description": "Lista separada por comas con lo recibido, usando solo estas palabras: titulo, notas, cedula."
+           },
+           "legibilidad": {
+            "type": "string",
+            "description": "Documentos con legibilidad dudosa, si los hay."
+           },
+           "diferencias": {
+            "type": "string",
+            "description": "Datos que no coinciden entre documentos, si los hay."
+           },
+           "archivos": {
+            "type": "string",
+            "description": "URLs de los archivos recibidos, separadas por comas."
+           }
+          },
+          "required": [
+           "accion",
+           "documentos_recibidos"
+          ]
+         }
+        }
        ]
       }
      }
