@@ -54,7 +54,7 @@ function mismoTelefono(a, b) {
 
 /** Convierte "$ 1.250.000", "1,250,000.00" o 1250000 en un numero entero de pesos. */
 function leerValor(valor) {
-  if (typeof valor === 'number') return Number.isFinite(valor) ? Math.round(valor) : null;
+  if (typeof valor === 'number') return Number.isFinite(valor) ? Math.round(valor * 100) / 100 : null;
   const limpio = texto(valor).replace(/[^\d.,]/g, '');
   if (!/\d/.test(limpio)) return null;
   const ultimoPunto = limpio.lastIndexOf('.');
@@ -67,7 +67,9 @@ function leerValor(valor) {
   const esDecimal = decimales > 0 && decimales !== 3 && (hayDosTipos || unSoloSeparador);
   const entero = esDecimal ? limpio.slice(0, separador) : limpio;
   const numero = Number(entero.replace(/[.,]/g, ''));
-  return Number.isFinite(numero) ? numero : null;
+  // Los centavos importan en euros: se conservan con dos decimales.
+  const centavos = esDecimal ? Number(`0.${limpio.slice(separador + 1)}`) : 0;
+  return Number.isFinite(numero) ? Math.round((numero + centavos) * 100) / 100 : null;
 }
 
 function compararPago(valorEsperado, valorPagado) {

@@ -44,7 +44,10 @@ const VENTA = { accion: 'crear_venta', telefono: '+57 300 123 4567', servicio: '
 test('lee valores en los formatos usuales de un comprobante', () => {
   assert.equal(leerValor('$ 1.250.000'), 1250000);
   assert.equal(leerValor('1,250,000.00'), 1250000);
-  assert.equal(leerValor('1.250.000,50'), 1250000);
+  assert.equal(leerValor('1.250.000,50'), 1250000.5);
+  assert.equal(leerValor('83,33'), 83.33);
+  assert.equal(leerValor('€ 149.99'), 149.99);
+  assert.equal(leerValor(83.333), 83.33);
   assert.equal(leerValor('350.000'), 350000);
   assert.equal(leerValor('COP 85000'), 85000);
   assert.equal(leerValor(420000), 420000);
@@ -471,4 +474,14 @@ test('quien escribe por primera vez queda como prospecto desde el primer mensaje
   assert.equal(ventas[0].cliente, 'Laura R');
   await llamar(env, desdeElChat('573128461881', { accion: 'guardar_registro', nombre: 'Laura Rhenals', universidad: 'UNIR', documentos_recibidos: '' }));
   assert.equal((await llamar(env, { accion: 'listar' })).ventas[0].cliente, 'Laura Rhenals');
+});
+
+test('los abonos en euros con centavos dejan el saldo exacto', async () => {
+  const env = entornoDePrueba();
+  const { venta } = await llamar(env, { ...VENTA, valor: '150', moneda: 'EUR', tasa: '4500' });
+  assert.equal((await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '66,67', moneda: 'EUR', referencia: 'E1' }))).saldo_pendiente, 83.33);
+  assert.equal((await llamar(env, desdeElChat('573001234567', { accion: 'guardar_pago', valor: '83,33', moneda: 'EUR', referencia: 'E2' }))).saldo_pendiente, 0);
+  const { venta: final } = await llamar(env, { accion: 'ver', id: venta.id });
+  assert.equal(final.pago.pagado, 150);
+  assert.deepEqual(final.pago.pagos.map((uno) => uno.valor), [66.67, 83.33]);
 });
