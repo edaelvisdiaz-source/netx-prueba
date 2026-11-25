@@ -78,11 +78,32 @@ test('si no hay imagen configurada envia solo el texto y lo anota', async (t) =>
   assert.match(salida.vars.envio, /sin imagen de tarifa/);
 });
 
-test('si el cliente escribe dos mensajes seguidos solo sale una respuesta', async (t) => {
-  const espia = t.mock.method(globalThis, 'fetch', async () => new Response('{}'));
-  const DB = base();
-  const pedido = { available_edges: ['enviar', 'callar'], execution_context: contexto('Hola') };
-  assert.equal((await llamar(pedido, { KAPSO_API_KEY: 'llave', DB })).vars.envio, 'enviado');
-  assert.match((await llamar(pedido, { KAPSO_API_KEY: 'llave', DB })).vars.envio, /omitido/);
-  assert.equal(espia.mock.callCount(), 1);
+test('si el cliente escribio despues, calla y deja responder a la ejecucion del ultimo mensaje', async (t) => {
+  const enviados = [];
+  let ultimoDelCliente = 'wamid.NUEVO';
+  t.mock.method(globalThis, 'fetch', async (url, opciones = {}) => {
+    if (String(url).includes('/whatsapp/messages?')) {
+      return new Response(JSON.stringify({ data: [{ id: 'wamid.SALIENTE', kapso: { direction: 'outbound' } }, { id: ultimoDelCliente, kapso: { direction: 'inbound' } }] }));
+    }
+    enviados.push(JSON.parse(opciones.body)); return new Response('{}');
+  });
+  const evento = { conversation: { id: 'conv-1' }, message: { whatsapp_message_id: 'wamid.VIEJO' } };
+  const pedido = { available_edges: ['enviar', 'callar'], execution_context: { ...contexto('Hola'), system: { whatsapp_config: { phone_number_id: '111' }, event: evento } } };
+  assert.match((await llamar(pedido, { KAPSO_API_KEY: 'llave' })).vars.envio, /omitido/);
+  assert.equal(enviados.length, 0);
+  ultimoDelCliente = 'wamid.VIEJO';
+  assert.equal((await llamar(pedido, { KAPSO_API_KEY: 'llave' })).vars.envio, 'enviado');
+  assert.equal((await llamar(pedido, { KAPSO_API_KEY: 'llave' })).vars.envio, 'enviado');
+  assert.equal(enviados.length, 2);
+});
+
+test('si no se puede consultar la conversacion, responde igual', async (t) => {
+  const enviados = [];
+  t.mock.method(globalThis, 'fetch', async (url, opciones = {}) => {
+    if (String(url).includes('/whatsapp/messages?')) throw new Error('sin red');
+    enviados.push(JSON.parse(opciones.body)); return new Response('{}');
+  });
+  const pedido = { available_edges: ['enviar', 'callar'], execution_context: { ...contexto('Hola'), system: { whatsapp_config: { phone_number_id: '111' }, event: { conversation: { id: 'c' }, message: { whatsapp_message_id: 'w' } } } } };
+  assert.equal((await llamar(pedido, { KAPSO_API_KEY: 'llave' })).vars.envio, 'enviado');
+  assert.equal(enviados.length, 1);
 });

@@ -4,11 +4,10 @@
 // misma por la API de WhatsApp con el secreto KAPSO_API_KEY. Sin ese secreto no se envia nada.
 // Kapso exige una funcion `handler(request, env)` sin `export`.
 const API_DE_WHATSAPP = 'https://api.kapso.ai/meta/whatsapp/v24.0';
+const API_DE_KAPSO = 'https://api.kapso.ai/platform/v1';
 const MAXIMO_DE_UN_MENSAJE = 4000;
 // Identificador en WhatsApp de la imagen de tarifas; se fija con la accion `fijar_tarifa`.
 const CLAVE_DE_LA_TARIFA = 'apoyo:tarifa_media_id';
-// Cuando el cliente escribe varios mensajes seguidos, cada uno lanza a la IA; solo debe salir una respuesta.
-const SEGUNDOS_ENTRE_RESPUESTAS = 25;
 
 async function mensaje(env, lineaId, telefono, contenido) {
   const respuesta = await fetch(`${API_DE_WHATSAPP}/${lineaId}/messages`, {
@@ -29,17 +28,23 @@ async function enviar(env, lineaId, telefono, texto, conTarifa) {
 }
 
 /**
- * Marca que se le va a responder a este cliente; devuelve true si ya se le respondio hace un momento.
- * Usa la base de datos y no el almacen KV, porque KV tarda en reflejar lo recien escrito y dos
- * ejecuciones simultaneas no se verian entre si.
+ * Cuando el cliente escribe varios mensajes seguidos, cada uno lanza a la IA por separado. Solo
+ * debe responder la ejecucion del mensaje mas reciente, que es la que ve todo lo que llego; las
+ * anteriores callan. Si no se puede consultar, se responde igual: es peor dejar al cliente sin respuesta.
  */
-async function acabaDeResponder(env, telefono) {
-  const ahora = Date.now();
-  await env.DB.prepare('CREATE TABLE IF NOT EXISTS apoyo_respuestas (telefono TEXT PRIMARY KEY, ultima INTEGER NOT NULL)').run();
-  const escrito = await env.DB.prepare(
-    'INSERT INTO apoyo_respuestas (telefono, ultima) VALUES (?1, ?2) ON CONFLICT(telefono) DO UPDATE SET ultima = ?2 WHERE ultima < ?3',
-  ).bind(telefono, ahora, ahora - SEGUNDOS_ENTRE_RESPUESTAS * 1000).run();
-  return (escrito.meta?.changes ?? 0) === 0;
+async function llegoOtroMensajeDespues(env, evento) {
+  const conversacion = evento?.conversation?.id;
+  const disparador = evento?.message?.whatsapp_message_id;
+  if (!conversacion || !disparador) return false;
+  try {
+    const respuesta = await fetch(`${API_DE_KAPSO}/whatsapp/messages?conversation_id=${encodeURIComponent(conversacion)}&per_page=10`, { headers: { 'X-API-Key': env.KAPSO_API_KEY } });
+    if (!respuesta.ok) return false;
+    const mensajes = (await respuesta.json()).data || [];
+    const ultimoDelCliente = mensajes.find((mensaje) => mensaje.kapso?.direction === 'inbound');
+    return Boolean(ultimoDelCliente) && ultimoDelCliente.id !== disparador;
+  } catch {
+    return false;
+  }
 }
 
 async function handler(request, env) {
@@ -58,7 +63,7 @@ async function handler(request, env) {
   if (texto && esDecision) {
     if (!env.KAPSO_API_KEY) resultado = 'falta el secreto KAPSO_API_KEY';
     else if (!telefono || !lineaId) resultado = 'faltan el telefono o la linea';
-    else if (await acabaDeResponder(env, telefono)) resultado = 'omitido: ya se respondio hace un momento';
+    else if (await llegoOtroMensajeDespues(env, contexto.system?.event)) resultado = 'omitido: el cliente escribio despues; responde la ejecucion de ese mensaje';
     else resultado = await enviar(env, lineaId, telefono, texto, /^s[ií]/i.test(String(contexto.vars?.enviar_tarifa ?? ''))).catch(() => 'error de red');
   }
   const salida = esDecision ? { next_edge: 'callar', vars: { envio: resultado } } : { ok: true };
